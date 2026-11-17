@@ -12,17 +12,35 @@ permissions:
 
 jobs:
   flatpak:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
-      options: --privileged
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Cache build state
+        uses: actions/cache@v4
         with:
-          bundle: mass.flatpak
-          manifest-path: flatpak/io.github.mass_matugen.Mass.yml
-          cache-key: flatpak-builder-${{ hashFiles('flatpak/**') }}
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('flatpak/**') }}
+          restore-keys: flatpak-builder-
+
+      - name: Build
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
+            --repo=repo build-dir flatpak/io.github.mass_matugen.Mass.yml
+          flatpak build-bundle repo mass.flatpak io.github.mass_matugen.Mass \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mass-flatpak
+          path: mass.flatpak
+
       - name: Attach bundle to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
