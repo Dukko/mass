@@ -1,0 +1,552 @@
+"""Music Assistant connection, exposed to the UI as a GObject with signals.
+
+All MA traffic goes through here. Everything runs on the GLib-backed asyncio loop,
+so signal handlers can touch widgets directly.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+import urllib.parse
+from typing import Any
+
+import aiohttp
+from gi.repository import GLib, GObject
+from music_assistant_client import MusicAssistantClient
+from music_assistant_client.auth_helpers import login_with_token
+from music_assistant_client.exceptions import CannotConnect
+from music_assistant_models.errors import AuthenticationFailed, AuthenticationRequired
+from music_assistant_models.enums import EventType, PlaybackState, RepeatMode
+from music_assistant_models.event import MassEvent
+from music_assistant_models.player import Player
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
+
+from . import APP_NAME, secrets
+
+log = logging.getLogger(__name__)
+
+
+class Status:
+    IDLE = "idle"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    AUTH_REQUIRED = "auth-required"
+
+
+class Backend(GObject.Object):
+    __gsignals__ = {
+        "status-changed": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
+        "players-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "player-updated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "queue-updated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "queue-items-updated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "queue-time-updated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "active-player-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "ai-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+    }
+
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+        self.client: MusicAssistantClient | None = None
+        self.status = Status.IDLE
+        self.status_detail = ""
+        self._session: aiohttp.ClientSession | None = None
+        self._runner: asyncio.Task | None = None
+        self._token: str | None = None
+        self._image_cache: dict[str, bytes] = {}
+        self.dj_hosts: dict[str, dict] = {}
+        self._lyrics: dict[str, tuple[str | None, str | None]] = {}
+        self._sound_effects: list[dict] | None = None
+        self.dj_map: dict[str, str] = {}
+
+    # ------------------------------------------------------------------ lifecycle
+
+    def _set_status(self, status: str, detail: str = "") -> None:
+        self.status, self.status_detail = status, detail
+        self.emit("status-changed", status, detail)
+
+    def start(self) -> None:
+        """(Re)start the connection loop using the configured server + stored token."""
+        if self._runner and not self._runner.done():
+            self._runner.cancel()
+        if not self.config.server_url:
+            self._set_status(Status.AUTH_REQUIRED, "No server configured")
+            return
+        self._token = secrets.load_token(self.config.server_url)
+        if not self._token:
+            self._set_status(Status.AUTH_REQUIRED, "Sign in to your Music Assistant server")
+            return
+        self._runner = asyncio.ensure_future(self._run())
+
+    async def stop(self) -> None:
+        if self._runner:
+            self._runner.cancel()
+        if self.client:
+            await self.client.disconnect()
+        if self._session:
+            await self._session.close()
+
+    async def login(self, server_url: str, username: str, password: str) -> None:
+        """Exchange credentials for a long-lived token and persist it. Raises on failure."""
+        server_url = server_url.rstrip("/")
+        session = await self._get_session()
+        _user, token = await login_with_token(
+            server_url, username, password, token_name=f"{APP_NAME} ({GLib.get_host_name()})",
+            aiohttp_session=session,
+        )
+        if not secrets.store_token(server_url, token):
+            raise RuntimeError("Could not store the token in the Secret Service (is a keyring running?)")
+        self.config.server_url = server_url
+        self.config.username = username
+        self.config.save()
+        self.start()
+
+    async def logout(self) -> None:
+        if self._runner:
+            self._runner.cancel()
+        if self.client:
+            await self.client.disconnect()
+            self.client = None
+        secrets.clear_token(self.config.server_url)
+        self._set_status(Status.AUTH_REQUIRED, "Signed out")
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def _run(self) -> None:
+        delay = 1.0
+        while True:
+            session = await self._get_session()
+            self._set_status(Status.CONNECTING, self.config.server_url)
+            client = MusicAssistantClient(self.config.server_url, session, token=self._token)
+            ready = asyncio.Event()
+            listen = asyncio.ensure_future(client.start_listening(ready))
+            try:
+                done, _ = await asyncio.wait(
+                    {listen, asyncio.ensure_future(ready.wait())},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if listen in done:
+                    listen.result()  # raises the connect error
+                    raise CannotConnect(Exception("connection closed"))
+                self.client = client
+                client.subscribe(self._on_event)
+                delay = 1.0
+                info = client.server_info
+                self._set_status(Status.CONNECTED, f"Music Assistant {info.server_version}")
+                self.emit("players-changed")
+                self.emit("active-player-changed")
+                self.run(self.refresh_ai())
+                await listen  # returns when the socket closes
+                raise CannotConnect(Exception("connection lost"))
+            except asyncio.CancelledError:
+                listen.cancel()
+                raise
+            except (AuthenticationFailed, AuthenticationRequired) as err:
+                log.warning("Auth failed: %s", err)
+                self.client = None
+                self._set_status(Status.AUTH_REQUIRED, "Token rejected, sign in again")
+                return
+            except Exception as err:  # noqa: BLE001 - keep reconnecting on anything
+                log.info("Disconnected (%s), retrying in %.0fs", err, delay)
+                self.client = None
+                self._set_status(Status.DISCONNECTED, str(err) or type(err).__name__)
+                listen.cancel()
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+    # ------------------------------------------------------------------ events
+
+    def _on_event(self, event: MassEvent) -> None:
+        et, oid = event.event, event.object_id or ""
+        if et in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
+            self.emit("players-changed")
+        elif et == EventType.PLAYER_UPDATED:
+            self.emit("player-updated", oid)
+        elif et in (EventType.QUEUE_ADDED, EventType.QUEUE_UPDATED):
+            self.emit("queue-updated", oid)
+        elif et == EventType.QUEUE_ITEMS_UPDATED:
+            self.emit("queue-items-updated", oid)
+        elif et == EventType.QUEUE_TIME_UPDATED:
+            self.emit("queue-time-updated", oid)
+
+    # ------------------------------------------------------------------ state helpers
+
+    @property
+    def connected(self) -> bool:
+        return self.client is not None and self.status == Status.CONNECTED
+
+    def players(self) -> list[Player]:
+        if not self.client:
+            return []
+        items = [p for p in self.client.players.players if p.enabled and not p.hide_in_ui]
+        return sorted(items, key=lambda p: (not p.available, p.name.lower()))
+
+    def get_player(self, player_id: str | None = None) -> Player | None:
+        if not self.client:
+            return None
+        return self.client.players.get(player_id or self.config.active_player_id)
+
+    @property
+    def active_player(self) -> Player | None:
+        player = self.get_player()
+        if player is None and (players := self.players()):
+            # fall back to whatever is playing, else the first available player
+            player = next((p for p in players if p.playback_state == PlaybackState.PLAYING), players[0])
+            self.config.active_player_id = player.player_id
+        return player
+
+    def set_active_player(self, player_id: str) -> None:
+        if player_id == self.config.active_player_id:
+            return
+        self.config.active_player_id = player_id
+        self.config.save()
+        self.emit("active-player-changed")
+
+    def queue_for(self, player: Player | None) -> PlayerQueue | None:
+        if not self.client or not player:
+            return None
+        queues = self.client.player_queues
+        # a grouped/synced player plays from its leader's queue
+        leader_id = player.active_group or player.synced_to or player.player_id
+        leader = self.client.players.get(leader_id) or player
+        q = None
+        for qid in (leader.active_source, leader_id, player.player_id):
+            if qid and (q := queues.get(qid)):
+                break
+        if q is None:
+            return None
+        cm = leader.current_media
+        if cm and q.current_item and cm.queue_item_id is None and cm.uri != getattr(q.current_item, "uri", None):
+            # playing something MA didn't queue (Spotify Connect, AirPlay, the device's own app):
+            # the MA queue is stale, so callers fall back to player.current_media.
+            # (Some devices, e.g. WiiM, report their own id as source even while MA streams.)
+            return None
+        return q
+
+    @property
+    def active_queue(self) -> PlayerQueue | None:
+        return self.queue_for(self.active_player)
+
+    def is_relevant(self, object_id: str) -> bool:
+        """Whether an event object id affects the active player/queue."""
+        player = self.active_player
+        if not player:
+            return False
+        q = self.active_queue
+        return object_id in {
+            player.player_id,
+            player.active_group,
+            player.synced_to,
+            q.queue_id if q else None,
+        }
+
+    def elapsed(self, queue: PlayerQueue | None = None) -> float:
+        """Interpolated elapsed time of the active queue."""
+        q = queue or self.active_queue
+        if not q:
+            # external source: interpolate from the player itself
+            p = self.active_player
+            if not p or p.elapsed_time is None:
+                return 0.0
+            base = p.elapsed_time
+            if p.playback_state == PlaybackState.PLAYING and p.elapsed_time_last_updated:
+                base += time.time() - p.elapsed_time_last_updated
+            dur = p.current_media.duration if p.current_media else None
+            return min(base, dur) if dur else base
+        base = q.elapsed_time or 0.0
+        if q.state == PlaybackState.PLAYING and q.elapsed_time_last_updated:
+            base += (time.time() - q.elapsed_time_last_updated) * (q.playback_speed or 1.0)
+        dur = q.current_item.duration if q.current_item else None
+        return min(base, dur) if dur else base
+
+    # ------------------------------------------------------------------ images
+
+    def image_url(self, item: Any, size: int = 0) -> str | None:
+        """Resolve an image url for a media item / queue item / item mapping.
+
+        Unlike the client helper this never routes through third-party thumbnailers.
+        """
+        if not self.client or item is None:
+            return None
+        img = None
+        if isinstance(item, QueueItem):
+            img = item.image or (
+                self.client.music.get_media_item_image(item.media_item) if item.media_item else None
+            )
+        else:
+            img = self.client.music.get_media_item_image(item)
+        if img is None:
+            return None
+        if img.remotely_accessible:
+            return img.path
+        base = self.client.server_info.base_url
+        if img.proxy_id:
+            return f"{base}/imageproxy/{img.proxy_id}?size={size}"
+        enc = urllib.parse.quote(urllib.parse.quote(img.path))
+        return f"{base}/imageproxy?path={enc}&provider={img.provider}&size={size}"
+
+    async def fetch_image(self, url: str) -> bytes | None:
+        if not url:
+            return None
+        if (data := self._image_cache.get(url)) is not None:
+            return data
+        session = await self._get_session()
+        headers = {}
+        if self._token and self.config.server_url and url.startswith(
+            (self.config.server_url, self.client.server_info.base_url if self.client else "\0")
+        ):
+            headers["Authorization"] = f"Bearer {self._token}"
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.read()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            log.debug("image fetch failed %s: %s", url, err)
+            return None
+        if len(self._image_cache) > 400:
+            self._image_cache.clear()
+        self._image_cache[url] = data
+        return data
+
+    # ------------------------------------------------------------------ commands
+
+    def run(self, coro) -> None:
+        """Fire-and-forget a command, logging failures."""
+        task = asyncio.ensure_future(coro)
+
+        def done(t: asyncio.Task) -> None:
+            if not t.cancelled() and (err := t.exception()):
+                log.error("command failed: %s", err)
+
+        task.add_done_callback(done)
+
+    def _qid(self) -> str | None:
+        q = self.active_queue
+        return q.queue_id if q else None
+
+    def play_pause(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.play_pause(qid))
+        elif (p := self.active_player) and self.client:
+            self.run(self.client.players.play_pause(p.player_id))
+
+    def play(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.play(qid))
+
+    def pause(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.pause(qid))
+
+    def stop_playback(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.stop(qid))
+
+    def next(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.next(qid))
+
+    def previous(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.previous(qid))
+
+    def seek(self, seconds: float) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.seek(qid, int(seconds)))
+
+    def set_shuffle(self, enabled: bool) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.shuffle(qid, enabled))
+
+    def cycle_repeat(self) -> None:
+        q = self.active_queue
+        if q and self.client:
+            order = [RepeatMode.OFF, RepeatMode.ALL, RepeatMode.ONE]
+            nxt = order[(order.index(q.repeat_mode) + 1) % 3] if q.repeat_mode in order else RepeatMode.OFF
+            self.run(self.client.player_queues.repeat(q.queue_id, nxt))
+
+    def set_repeat(self, mode: RepeatMode) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.repeat(qid, mode))
+
+    def set_volume(self, level: int, player_id: str | None = None) -> None:
+        p = self.get_player(player_id) if player_id else self.active_player
+        if not (p and self.client):
+            return
+        level = max(0, min(100, int(level)))
+        if p.group_members and len(p.group_members) > 1:
+            self.run(self.client.players.group_volume(p.player_id, level))
+        else:
+            self.run(self.client.players.volume_set(p.player_id, level))
+
+    def set_mute(self, muted: bool) -> None:
+        if (p := self.active_player) and self.client:
+            self.run(self.client.players.volume_mute(p.player_id, muted))
+
+    def set_power(self, player_id: str, powered: bool) -> None:
+        if self.client:
+            self.run(self.client.players.power(player_id, powered))
+
+    def play_index(self, index: int | str) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.play_index(qid, index))
+
+    def play_media(self, media, option=None, start_item: str | None = None) -> None:
+        if (qid := self._qid() or (self.active_player and self.active_player.player_id)) and self.client:
+            self.run(self.client.player_queues.play_media(qid, media, option=option, start_item=start_item))
+
+    def transfer_to(self, target_player_id: str) -> None:
+        """Move the active queue to another player and make that player active."""
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.transfer(qid, target_player_id))
+        self.set_active_player(target_player_id)
+
+    def delete_queue_item(self, item_id: str) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.delete_item(qid, item_id))
+
+    def move_queue_item_next(self, item_id: str) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.move_next(qid, item_id))
+
+    def clear_queue(self) -> None:
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.player_queues.clear(qid))
+
+    # ------------------------------------------------------------------ queue options (MASS ⋮ menu)
+
+    def queue_cmd(self, command: str, **kwargs) -> None:
+        """Fire a player_queues/<command> on the active queue."""
+        if (qid := self._qid()) and self.client:
+            self.run(self.client.send_command(f"player_queues/{command}", queue_id=qid, **kwargs))
+
+    def set_autoplay(self, on: bool) -> None:
+        self.queue_cmd("autoplay", autoplay_enabled=on)
+
+    def set_crossfade(self, on: bool) -> None:
+        self.queue_cmd("crossfade", crossfade_enabled=on)
+
+    def set_overlay(self, source: str | None) -> None:
+        if source:
+            self.queue_cmd("overlay", enabled=True, source=source)
+        else:
+            self.queue_cmd("overlay", enabled=False)
+
+    def save_queue_as_playlist(self, name: str) -> None:
+        self.queue_cmd("save_as_playlist", name=name)
+
+    async def sound_effects(self) -> list[dict]:
+        if self._sound_effects is None and self.client:
+            try:
+                self._sound_effects = await self.client.send_command("music/sound_effects") or []
+            except Exception as err:  # noqa: BLE001
+                log.debug("no sound effects: %s", err)
+                self._sound_effects = []
+        return self._sound_effects or []
+
+    async def sleep_timer(self) -> float | None:
+        """Unix timestamp the active player's sleep timer fires at, if any."""
+        p = self.active_player
+        if not (p and self.client):
+            return None
+        try:
+            return await self.client.send_command("players/sleep_timer/get", player_id=p.player_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def set_sleep_timer(self, minutes: int) -> None:
+        if not ((p := self.active_player) and self.client):
+            return
+        if minutes > 0:
+            self.run(self.client.send_command("players/sleep_timer/set", player_id=p.player_id,
+                                              seconds=minutes * 60))
+        else:
+            self.run(self.client.send_command("players/sleep_timer/clear", player_id=p.player_id))
+
+    def announce(self, message: str) -> None:
+        if (p := self.active_player) and self.client and message.strip():
+            self.run(self.client.send_command("players/cmd/play_announcement", player_id=p.player_id,
+                                              message=message.strip()))
+
+    async def lyrics_for_current(self) -> tuple[str, str | None, str | None]:
+        """(key, plain, lrc) for whatever is playing; key identifies the track."""
+        q, p = self.active_queue, self.active_player
+        track = None
+        if q and q.current_item and (mi := q.current_item.media_item) is not None:
+            if getattr(mi, "media_type", None) and mi.media_type.value == "track":
+                track = mi
+        uri = getattr(track, "uri", None)
+        if track is None and p and (cm := p.current_media) and cm.uri and "://track/" in cm.uri:
+            uri = cm.uri
+        if not uri or not self.client:
+            return "", None, None
+        if uri in self._lyrics:
+            return (uri, *self._lyrics[uri])
+        try:
+            if track is None:
+                track = await self.client.music.get_item_by_uri(uri)
+            md = getattr(track, "metadata", None)
+            if md and (md.lrc_lyrics or md.lyrics):
+                res = (md.lyrics, md.lrc_lyrics)
+            else:
+                r = await self.client.send_command("metadata/get_track_lyrics", track=track.to_dict()) or [None, None]
+                res = (r[0], r[1])
+        except Exception as err:  # noqa: BLE001
+            log.debug("lyrics lookup failed for %s: %s", uri, err)
+            res = (None, None)
+        self._lyrics[uri] = res
+        if len(self._lyrics) > 200:
+            self._lyrics.pop(next(iter(self._lyrics)))
+        return (uri, *res)
+
+    # ------------------------------------------------------------------ AI Radio / DJ
+
+    @property
+    def ai_available(self) -> bool:
+        return bool(self.client and any(p.domain == "ai_radio" for p in self.client.providers))
+
+    async def ai(self, command: str, **kwargs):
+        return await self.client.send_command(f"ai_radio/{command}", **kwargs)
+
+    async def refresh_ai(self) -> None:
+        """Reload hosts + queue→DJ mapping; emits ai-changed."""
+        if not self.ai_available:
+            self.dj_hosts, self.dj_map = {}, {}
+        else:
+            try:
+                hosts = await self.ai("hosts/list")
+                self.dj_hosts = {h["id"]: h for h in hosts}
+                self.dj_map = await self.ai("queue_dj/status") or {}
+            except Exception as err:  # noqa: BLE001
+                log.warning("AI Radio unavailable: %s", err)
+                self.dj_hosts, self.dj_map = {}, {}
+        self.emit("ai-changed")
+
+    def dj_for(self, queue_id: str | None) -> dict | None:
+        host_id = self.dj_map.get(queue_id or "")
+        return self.dj_hosts.get(host_id) if host_id else None
+
+    def set_dj(self, host_id: str | None) -> None:
+        q, p = self.active_queue, self.active_player
+        qid = q.queue_id if q else (p.player_id if p else None)
+        if not qid or not self.client:
+            return
+
+        async def go():
+            await self.ai("queue_dj/set", queue_id=qid, host_id=host_id)
+            await self.refresh_ai()
+
+        self.run(go())
+
+    def toggle_favorite_current(self) -> None:
+        if (p := self.active_player) and self.client:
+            self.run(self.client.players.add_currently_playing_to_favorites(p.player_id))

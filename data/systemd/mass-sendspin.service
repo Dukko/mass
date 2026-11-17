@@ -1,0 +1,14 @@
+[Unit]
+Description=Mass local Music Assistant player (Sendspin)
+After=pipewire.service pipewire-pulse.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/mass/sendspin.env
+ExecStart=/bin/sh -c 'eval exec "@SENDSPIN@" $$SENDSPIN_ARGS'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

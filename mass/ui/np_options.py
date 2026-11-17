@@ -1,0 +1,260 @@
+"""Now Playing option chips + ⋮ menu, mirroring the Music Assistant web UI.
+
+HR badge · Lyrics · Autoplay · Crossfade · ⋮ (stop, sleep timer, audio overlay, announcement,
+transfer, clear, save as playlist, AI DJ, settings, wavy progress bar)
+"""
+
+from __future__ import annotations
+
+import time
+
+from gi.repository import Adw, Gio, GLib, Gtk
+
+from .common import label
+from .expressive import Sym
+
+SLEEP_MINUTES = (15, 30, 45, 60, 90, 120)
+
+
+def _tool(symbol: str, text: str, toggle: bool = False) -> Gtk.Button:
+    btn = Gtk.ToggleButton() if toggle else Gtk.Button()
+    btn.add_css_class("np-tool")
+    box = Gtk.Box(spacing=6)
+    btn.sym = Sym(symbol, 18)
+    box.append(btn.sym)
+    box.append(Gtk.Label(label=text))
+    btn.set_child(box)
+    return btn
+
+
+def _item(text: str, action: str, target: str) -> Gio.MenuItem:
+    item = Gio.MenuItem.new(text, None)
+    item.set_action_and_target_value(action, GLib.Variant("s", target))
+    return item
+
+
+def audio_quality(backend) -> tuple[str, str] | None:
+    """('HR' | codec, tooltip) for the current queue item, if the server reported a format."""
+    q = backend.active_queue
+    sd = getattr(q.current_item, "streamdetails", None) if q and q.current_item else None
+    fmt = getattr(sd, "audio_format", None)
+    if not fmt or not fmt.sample_rate:
+        return None
+    codec = str(getattr(fmt.content_type, "value", fmt.content_type) or "").upper()
+    rate = fmt.sample_rate / 1000
+    tip = f"{codec} · {rate:g} kHz · {fmt.bit_depth}-bit"
+    hires = (fmt.bit_depth or 16) > 16 or fmt.sample_rate > 48000
+    return ("HR" if hires else codec or "?"), tip
+
+
+class NowPlayingOptions(Gtk.Box):
+    def __init__(self, backend, on_lyrics, on_wavy) -> None:
+        super().__init__(spacing=8, margin_top=16)
+        self.backend, self.on_lyrics, self.on_wavy = backend, on_lyrics, on_wavy
+        cfg = backend.config
+
+        self.badge = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.badge.add_css_class("np-badge")
+        dot = Gtk.Box(valign=Gtk.Align.CENTER)
+        dot.add_css_class("dot")
+        self.badge.append(dot)
+        self.badge_lbl = label("HR", ellipsize=False)
+        self.badge.append(self.badge_lbl)
+        self.append(self.badge)
+
+        self.lyrics = _tool("lyrics", "Lyrics", toggle=True)
+        self.lyrics.set_active(cfg.show_lyrics)
+        self.lyrics.connect("toggled", self._lyrics_toggled)
+        self.autoplay = _tool("autoplay", "Autoplay")
+        self.autoplay.set_tooltip_text("Keep playing similar music when the queue ends")
+        self.autoplay.connect("clicked", lambda *_: self._flip("autoplay_enabled", backend.set_autoplay))
+        self.crossfade = _tool("join", "Crossfade")
+        self.crossfade.connect("clicked", lambda *_: self._flip("crossfade_enabled", backend.set_crossfade))
+        for w in (self.lyrics, self.autoplay, self.crossfade):
+            self.append(w)
+
+        self.append(Gtk.Box(hexpand=True))
+        self.more = Gtk.MenuButton(tooltip_text="More options", valign=Gtk.Align.CENTER)
+        self.more.set_child(Sym("more_vert", 22))
+        for c in ("m3", "icon", "flat"):
+            self.more.add_css_class(c)
+        self.more.set_create_popup_func(self._build_menu)
+        self.append(self.more)
+
+        self._sleep_menu = Gio.Menu()
+        self._sleep_at: float | None = None
+        self._install_actions()
+        backend.connect("active-player-changed", lambda *_: self._fetch_sleep())
+
+    # ------------------------------------------------------------------ chips
+
+    def _lyrics_toggled(self, btn) -> None:
+        self.backend.config.show_lyrics = btn.get_active()
+        self.backend.config.save()
+        self.on_lyrics(btn.get_active())
+
+    def _flip(self, attr: str, setter) -> None:
+        q = self.backend.active_queue
+        if q:
+            setter(not getattr(q, attr))
+
+    def refresh(self) -> None:
+        q = self.backend.active_queue
+        for btn, attr in ((self.autoplay, "autoplay_enabled"), (self.crossfade, "crossfade_enabled")):
+            on = bool(q and getattr(q, attr, False))
+            (btn.add_css_class if on else btn.remove_css_class)("on")
+            btn.sym.set_fill(on)
+            btn.set_sensitive(q is not None)
+        qual = audio_quality(self.backend)
+        self.badge.set_visible(qual is not None)
+        if qual:
+            self.badge_lbl.set_label(qual[0])
+            self.badge.set_tooltip_text(qual[1])
+            (self.badge.add_css_class if qual[0] == "HR" else self.badge.remove_css_class)("hires")
+
+    # ------------------------------------------------------------------ actions
+
+    def _install_actions(self) -> None:
+        b = self.backend
+        group = Gio.SimpleActionGroup()
+
+        def add(name, cb, ptype=None, state=None):
+            if state is not None:
+                act = Gio.SimpleAction.new_stateful(name, GLib.VariantType(ptype) if ptype else None, state)
+            else:
+                act = Gio.SimpleAction.new(name, GLib.VariantType(ptype) if ptype else None)
+            act.connect("activate", cb)
+            group.add_action(act)
+            return act
+
+        add("stop", lambda *_: b.stop_playback())
+        add("clear", lambda *_: b.clear_queue())
+        add("sleep", lambda _a, v: (b.set_sleep_timer(v.get_int32()),
+                                    GLib.timeout_add(600, lambda: (self._fetch_sleep(), False)[1])), "i")
+        self.act_overlay = add("overlay", self._on_overlay, "s", GLib.Variant("s", ""))
+        add("transfer", lambda _a, v: b.transfer_to(v.get_string()), "s")
+        self.act_dj = add("dj", lambda a, v: (a.set_state(v), b.set_dj(v.get_string() or None)), "s",
+                          GLib.Variant("s", ""))
+        add("announce", lambda *_: self._ask("Play announcement", "Speak a message on this player",
+                                             "Dinner is ready!", "Announce", b.announce))
+        add("save", lambda *_: self._ask("Save queue as playlist", "Creates a new playlist in your library",
+                                         time.strftime("Queue %b %-d"), "Save", b.save_queue_as_playlist,
+                                         prefill=True))
+        add("settings", self._open_settings, "s")
+        self.act_wavy = add("wavy", self._on_wavy, None, GLib.Variant("b", b.config.wavy_progress))
+        self.insert_action_group("np", group)
+
+    def _on_overlay(self, act, v) -> None:
+        act.set_state(v)
+        self.backend.set_overlay(v.get_string() or None)
+
+    def _on_wavy(self, act, _v) -> None:
+        on = not act.get_state().get_boolean()
+        act.set_state(GLib.Variant("b", on))
+        self.backend.config.wavy_progress = on
+        self.backend.config.save()
+        self.on_wavy(on)
+
+    def _open_settings(self, _a, v) -> None:
+        what = v.get_string()
+        if what == "app":
+            self.activate_action("app.preferences", None)
+            return
+        p, base = self.backend.active_player, self.backend.config.server_url.rstrip("/")
+        if not p or not base:
+            return
+        suffix = "/dsp" if what == "dsp" else ""
+        Gtk.UriLauncher.new(f"{base}/#/settings/editplayer/{p.player_id}{suffix}").launch(
+            self.get_root(), None, None)
+
+    def _ask(self, heading, body, placeholder, verb, cb, prefill=False) -> None:
+        dlg = Adw.AlertDialog(heading=heading, body=body)
+        entry = Gtk.Entry(placeholder_text=placeholder, activates_default=True)
+        if prefill:
+            entry.set_text(placeholder)
+        dlg.set_extra_child(entry)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("ok", verb)
+        dlg.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("ok")
+        dlg.connect("response", lambda _d, r: r == "ok" and cb(entry.get_text()))
+        dlg.present(self.get_root())
+
+    # ------------------------------------------------------------------ menu
+
+    def _fetch_sleep(self) -> None:
+        async def go():
+            self._sleep_at = await self.backend.sleep_timer()
+            self._fill_sleep()
+
+        self.backend.run(go())
+
+    def _fill_sleep(self) -> None:
+        m = self._sleep_menu
+        m.remove_all()
+        if self._sleep_at and self._sleep_at > time.time():
+            left = max(1, round((self._sleep_at - time.time()) / 60))
+            m.append(f"Stops in {left} min", "np.none")
+            m.append("Turn off", "np.sleep(0)")
+        for mins in SLEEP_MINUTES:
+            m.append(f"{mins} minutes" if mins < 60 else f"{mins / 60:g} hour{'s' if mins > 60 else ''}",
+                     f"np.sleep({mins})")
+
+    def _build_menu(self, button) -> None:
+        b = self.backend
+        q, p = b.active_queue, b.active_player
+        self._fill_sleep()
+        self._fetch_sleep()
+
+        menu = Gio.Menu()
+        main = Gio.Menu()
+        main.append("Stop playback", "np.stop")
+        main.append_submenu("Sleep timer", self._sleep_menu)
+
+        overlay = Gio.Menu()
+        self.act_overlay.set_state(GLib.Variant("s", (q.overlay_source or "") if q and q.overlay_enabled else ""))
+        overlay.append_item(_item("Off", "np.overlay", ""))
+        sub = overlay  # filled async the first time
+
+        async def fill_effects():
+            for fx in await b.sound_effects():
+                item = Gio.MenuItem.new(fx.get("name", "?"), None)
+                item.set_action_and_target_value("np.overlay", GLib.Variant("s", fx["uri"]))
+                sub.append_item(item)
+
+        b.run(fill_effects())
+        main.append_submenu("Audio overlay", overlay)
+        main.append("Play announcement…", "np.announce")
+
+        transfer = Gio.Menu()
+        for other in b.players():
+            if p and other.player_id != p.player_id and other.available and not other.synced_to:
+                item = Gio.MenuItem.new(other.name, None)
+                item.set_action_and_target_value("np.transfer", GLib.Variant("s", other.player_id))
+                transfer.append_item(item)
+        main.append_submenu("Transfer queue", transfer)
+        main.append("Clear queue", "np.clear")
+        main.append("Save queue as playlist…", "np.save")
+
+        if b.ai_available:
+            dj = Gio.Menu()
+            cur = b.dj_for(q.queue_id if q else (p.player_id if p else None))
+            self.act_dj.set_state(GLib.Variant("s", cur["id"] if cur else ""))
+            dj.append_item(_item("Off", "np.dj", ""))
+            for hid, h in b.dj_hosts.items():
+                item = Gio.MenuItem.new(h["name"], None)
+                item.set_action_and_target_value("np.dj", GLib.Variant("s", hid))
+                dj.append_item(item)
+            main.append_submenu("AI Radio DJ", dj)
+
+        settings = Gio.Menu()
+        settings.append("Player settings…", "np.settings::player")
+        settings.append("Player DSP…", "np.settings::dsp")
+        settings.append("Mass preferences", "np.settings::app")
+        main.append_submenu("Settings", settings)
+        menu.append_section(None, main)
+
+        view = Gio.Menu()
+        view.append("Wavy progress bar", "np.wavy")
+        menu.append_section(None, view)
+        button.set_menu_model(menu)

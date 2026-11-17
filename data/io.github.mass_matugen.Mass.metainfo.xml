@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mass_matugen.Mass</id>
+  <name>Mass</name>
+  <summary>Music Assistant player with Material You theming</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <developer id="io.github.dukko">
+    <name>Dukko</name>
+  </developer>
+  <description>
+    <p>
+      A desktop client for Music Assistant in the Material 3 Expressive style. It follows your
+      matugen or DankMaterialShell palette live, or themes itself from the album art.
+    </p>
+    <ul>
+      <li>Browse, search and control every Music Assistant player</li>
+      <li>Turn this computer into a Music Assistant speaker (Sendspin)</li>
+      <li>Time-synced lyrics, AI Radio DJ hosts and stations</li>
+      <li>MPRIS, notifications and a tray icon</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.mass_matugen.Mass.desktop</launchable>
+  <url type="vcs-browser">https://github.com/Dukko/mass</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-17"/>
+  </releases>
+</component>

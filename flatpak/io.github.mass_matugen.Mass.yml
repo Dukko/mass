@@ -1,0 +1,63 @@
+app-id: io.github.mass_matugen.Mass
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: mass
+finish-args:
+  - --share=network            # Music Assistant server, mDNS discovery, Sendspin
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio        # local "This PC" player
+  - --filesystem=xdg-run/pipewire-0
+  # shared with a native install: settings, matugen template output, sendspin env
+  - --filesystem=xdg-config/mass:create
+  - --filesystem=xdg-cache/dms:ro          # DankMaterialShell palette
+  - --filesystem=xdg-config/autostart:create
+  - --filesystem=xdg-config/systemd/user:create
+  # host matugen (album-art colors) + systemctl --user (background player service)
+  - --talk-name=org.freedesktop.Flatpak
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.mpris.MediaPlayer2.mass
+  # use the desktop keyring directly (shares the token with a native install)
+  - --env=SECRET_BACKEND=service
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - '*.a'
+  - '*.la'
+modules:
+  - name: portaudio
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --without-jack
+      - --without-oss
+    sources:
+      - type: archive
+        url: https://github.com/PortAudio/portaudio/archive/refs/tags/v19.7.0.tar.gz
+        sha256: 5af29ba58bbdbb7bbcefaaecc77ec8fc413f0db6f4c4e286c40c3e1b83174fa0
+
+  - python3-deps.json
+
+  - name: mass
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-deps --no-build-isolation --prefix=${FLATPAK_DEST} .
+      - install -Dm644 data/${FLATPAK_ID}.desktop -t ${FLATPAK_DEST}/share/applications
+      - install -Dm644 data/${FLATPAK_ID}.metainfo.xml -t ${FLATPAK_DEST}/share/metainfo
+      - install -Dm644 data/icons/${FLATPAK_ID}.svg -t ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps
+      - install -Dm644 data/icons/${FLATPAK_ID}.svg -t ${FLATPAK_DEST}/share/mass/icons
+      - install -Dm644 data/matugen/mass-colors.json -t ${FLATPAK_DEST}/share/mass/matugen
+      - install -Dm644 data/matugen/config-snippet.toml -t ${FLATPAK_DEST}/share/mass/matugen
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .venv
+          - .flatpak-builder
+          - build-dir
+          - repo

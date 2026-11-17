@@ -1,0 +1,6 @@
+# Add this to your matugen config (~/.config/matugen/config.toml), or to
+# DankMaterialShell's user matugen config, to drive Mass from your wallpaper.
+# Mass watches the output file and re-themes live.
+[templates.mass]
+input_path = "~/.local/share/mass/matugen/mass-colors.json"
+output_path = "~/.config/mass/colors.json"
