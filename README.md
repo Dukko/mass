@@ -19,14 +19,27 @@ Needs a Music Assistant server (schema 28+). You sign in with your MA account, a
 
 ## Install
 
-### Flatpak
-
-Download `mass.flatpak` from the [latest release](https://github.com/Dukko/mass/releases)
-(or from the artifacts of the latest *Flatpak* workflow run), then:
+### Flatpak (auto-updating)
 
 ```sh
-flatpak install --user mass.flatpak
+flatpak install --user https://dukko.github.io/mass/mass.flatpakref
 ```
+
+This installs from a signed Flatpak repo on GitHub Pages that CI rebuilds on every push to `main`,
+so `flatpak update` (or your software center) picks up new versions. For hands-off updates, add a
+user timer:
+
+```sh
+mkdir -p ~/.config/systemd/user
+printf '[Service]\nType=oneshot\nExecStart=/usr/bin/flatpak update --user -y --noninteractive io.github.mass_matugen.Mass\n' \
+  > ~/.config/systemd/user/mass-update.service
+printf '[Timer]\nOnStartupSec=5min\nOnUnitActiveSec=2h\nPersistent=true\n[Install]\nWantedBy=timers.target\n' \
+  > ~/.config/systemd/user/mass-update.timer
+systemctl --user enable --now mass-update.timer
+```
+
+A single-file `mass.flatpak` bundle is also attached to each [release](https://github.com/Dukko/mass/releases)
+(no automatic updates).
 
 To build it yourself:
 
