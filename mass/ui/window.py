@@ -20,6 +20,9 @@ from .queue import QueuePage
 from .search import SearchView
 
 SPLASH_TIMEOUT_S = 12  # never keep the splash up longer than this (slow or unreachable server)
+WARM_GAP_FRAMES = 3  # smooth frames to leave between two warm-up layouts, so the splash keeps moving
+WARM_MAX_WAIT_FRAMES = 12  # ...but never wait longer than this for the frame rate to recover
+WARM_SLOW_FRAME_US = 25_000  # a frame longer than this means the last layout hasn't settled yet
 
 MENU_XML = """
 <interface><menu id="m">
@@ -98,6 +101,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.banner = Adw.Banner()
         self.page_motion = spring_stack(self.stack)
         self._warmed = False
+        self._warming = False
         root = Adw.ToolbarView(content=self.page_motion, top_bar_style=Adw.ToolbarStyle.FLAT)
         root.add_top_bar(header)
         root.add_top_bar(self.banner)
@@ -161,7 +165,8 @@ class MainWindow(Adw.ApplicationWindow):
         if not self.backend.config.server_url:
             self.splash.set_visible(False)  # first run: go straight to sign-in
         else:
-            GLib.timeout_add_seconds(SPLASH_TIMEOUT_S, lambda: (self._end_splash(), False)[1])
+            self.splash.hold_pages()  # the pages behind it don't need to animate until it's gone
+            GLib.timeout_add_seconds(SPLASH_TIMEOUT_S, self._splash_timeout)
         self.revealer_mini = self.mini
         self.toasts = Adw.ToastOverlay(child=overlay)
         self.set_content(self.toasts)
@@ -231,6 +236,7 @@ class MainWindow(Adw.ApplicationWindow):
             hid = self.connect("map", lambda *_: (self.disconnect(hid), self._warm_up()))
             return
         self._warmed = True
+        self._warming = True
         self.splash.set_status("Getting things ready…")
         pages = [n for n in ("library", "search", "queue", "airadio", "nowplaying")
                  if n != "airadio" or self.backend.ai_available]
@@ -249,12 +255,19 @@ class MainWindow(Adw.ApplicationWindow):
                 np.stack.set_visible_child_name(name)
 
         it = iter(steps)
-        frames = [0]
+        state = {"since": 0, "last": 0}
 
-        def tick(*_):
-            frames[0] += 1
-            if frames[0] % 2:  # each step gets a frame to lay out before the next
+        def tick(_w, clock):
+            # A page's first layout makes its frame long, and the splash misses that frame. Leave a
+            # few smooth frames between layouts (and wait for the frame rate to recover) so the
+            # splash keeps moving instead of hitching on every other frame.
+            now = clock.get_frame_time()
+            slow = state["last"] and now - state["last"] > WARM_SLOW_FRAME_US
+            state["last"] = now
+            state["since"] += 1
+            if state["since"] < WARM_GAP_FRAMES or (slow and state["since"] < WARM_MAX_WAIT_FRAMES):
                 return True
+            state["since"] = 0
             step = next(it, None)
             if step is not None:
                 show(step)
@@ -262,11 +275,19 @@ class MainWindow(Adw.ApplicationWindow):
             np.stack.set_visible_child_name(orig_tab)
             self.stack.set_visible_child_name(self._page if self._page != "status" else orig_page)
             self.page_motion.silent = np.tab_motion.silent = False
+            self._warming = False
             GLib.timeout_add(120, lambda: (self._end_splash(), False)[1])  # let the last layout land
             return False
 
         show(next(it))
         self.add_tick_callback(tick)
+
+    def _splash_timeout(self) -> bool:
+        # a warm-up in progress dismisses the splash itself once the pages are back in place;
+        # fading out now would show them flipping by
+        if not self._warming:
+            self._end_splash()
+        return False
 
     def _end_splash(self) -> None:
         self.splash.dismiss()

@@ -12,6 +12,7 @@ fixed size, so loading art never reflows anything.
 from __future__ import annotations
 
 import math
+import weakref
 
 from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk
 
@@ -75,22 +76,75 @@ SHAPES = {
 }
 
 
+_UNIT: dict[int, list[tuple[float, float]]] = {}
+
+
+def _unit_circle(n: int) -> list[tuple[float, float]]:
+    """(cos, sin) of the n sample angles, computed once per sample count."""
+    unit = _UNIT.get(n)
+    if unit is None:
+        unit = _UNIT[n] = [(math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n)) for i in range(n)]
+    return unit
+
+
+# ---------------------------------------------------------------------- suspending
+
+_suspended = False
+_waiting: "weakref.WeakSet[Gtk.Widget]" = weakref.WeakSet()
+
+
+def suspend_animations(on: bool) -> None:
+    """Hold continuous animations (spinning art, waves) while they can't be seen, e.g. under the
+    startup splash. Widgets that wanted to animate resume when this is turned off again."""
+    global _suspended
+    _suspended = on
+    if not on:
+        waiting = list(_waiting)
+        _waiting.clear()
+        for w in waiting:
+            if w.get_mapped():  # unmapped ones pick it up again in do_map
+                w._ensure_tick()
+
+
+def _held(widget) -> bool:
+    if _suspended and getattr(widget, "suspendable", True):
+        _waiting.add(widget)
+        return True
+    return False
+
+
 def shape_radii(name: str, n: int) -> list[float]:
     fn = SHAPES.get(name, SHAPES["square"])
     return [fn(2 * math.pi * i / n) for i in range(n)]
 
 
-def build_shape_path(radii: list[float], w: float, h: float, rotation: float = 0.0) -> Gsk.Path:
-    n = len(radii)
-    cx, cy = w / 2, h / 2
+def shape_points(radii_from: list[float], radii_to: list[float], t: float, w: float,
+                 h: float) -> list[tuple[float, float]]:
+    """Outline points of the shape morphed `t` of the way from one radii list to the other."""
     rx, ry = w / 2, h / 2
+    unit = _unit_circle(len(radii_to))
+    if t == 1.0 or radii_from is radii_to:  # t may overshoot 1 with a bouncy spring: extrapolate
+        return [(rx + rx * r * c, ry + ry * r * s) for (c, s), r in zip(unit, radii_to)]
+    return [(rx + rx * (a + (b - a) * t) * c, ry + ry * (a + (b - a) * t) * s)
+            for (c, s), a, b in zip(unit, radii_from, radii_to)]
+
+
+def build_shape_path(radii: list[float], w: float, h: float, rotation: float = 0.0) -> Gsk.Path:
+    if rotation:
+        n = len(radii)
+        pts = [(w / 2 + w / 2 * r * math.cos(2 * math.pi * i / n + rotation),
+                h / 2 + h / 2 * r * math.sin(2 * math.pi * i / n + rotation)) for i, r in enumerate(radii)]
+    else:
+        pts = shape_points(radii, radii, 1.0, w, h)
+    return _polygon(pts)
+
+
+def _polygon(pts: list[tuple[float, float]]) -> Gsk.Path:
     b = Gsk.PathBuilder.new()
-    for i, r in enumerate(radii):
-        t = 2 * math.pi * i / n
-        # shape is rotated, the sampled radius follows the rotated angle
-        x = cx + rx * r * math.cos(t + rotation)
-        y = cy + ry * r * math.sin(t + rotation)
-        (b.move_to if i == 0 else b.line_to)(x, y)
+    b.move_to(*pts[0])
+    line_to = b.line_to
+    for x, y in pts[1:]:
+        line_to(x, y)
     b.close()
     return b.to_path()
 
@@ -122,6 +176,7 @@ class ShapeArt(Gtk.Widget):
         self._tick_id = 0
         self._last_frame = 0
         self._path_cache: tuple | None = None
+        self._icon_cache: tuple | None = None  # (key, paintable, fg)
         self.add_css_class("shape-art")
         self.set_halign(Gtk.Align.CENTER)
         self.set_valign(Gtk.Align.CENTER)
@@ -175,11 +230,14 @@ class ShapeArt(Gtk.Widget):
         return [a + (b - a) * t for a, b in zip(self._from, self._to)]
 
     def _ensure_tick(self) -> None:
-        if not self._tick_id:
+        if not self._tick_id and not _held(self):
             self._last_frame = 0
             self._tick_id = self.add_tick_callback(self._on_tick)
 
     def _on_tick(self, _w, clock) -> bool:
+        if _held(self):
+            self._tick_id = 0
+            return GLib.SOURCE_REMOVE
         now = clock.get_frame_time()
         dt = min(0.05, (now - self._last_frame) / 1e6) if self._last_frame else 1 / 60
         self._last_frame = now
@@ -189,8 +247,8 @@ class ShapeArt(Gtk.Widget):
         if not self._fade.settled:
             self._fade.step(dt)
         if self.spin_speed:
+            # rotation is applied as a transform at draw time, so the cached outline stays valid
             self._rotation = (self._rotation + self.spin_speed * dt) % (2 * math.pi)
-            self._path_cache = None
         self.queue_draw()
         if self._morph.settled and self._fade.settled and not self.spin_speed:
             self._tick_id = 0
@@ -210,14 +268,19 @@ class ShapeArt(Gtk.Widget):
 
     def do_map(self) -> None:
         Gtk.Widget.do_map(self)
-        if self.spin_speed or not self._morph.settled:
+        if self.spin_speed or not self._morph.settled or not self._fade.settled:
             self._ensure_tick()
 
+    def do_css_changed(self, change) -> None:  # noqa: D102 - icon theme / colors may have changed
+        Gtk.Widget.do_css_changed(self, change)
+        self._icon_cache = None
+
     def _path(self, w: float, h: float) -> Gsk.Path:
+        """The unrotated outline; only rebuilt when the size changes or the shape is morphing."""
         key = (w, h)
         if self._path_cache and self._path_cache[0] == key:
             return self._path_cache[1]
-        path = build_shape_path(self._current_radii(), w, h, self._rotation)
+        path = _polygon(shape_points(self._from, self._to, self._morph.value, w, h))
         self._path_cache = (key, path)
         return path
 
@@ -227,7 +290,20 @@ class ShapeArt(Gtk.Widget):
             return
         path = self._path(w, h)
         bg = self.get_color()
+        rot = math.degrees(self._rotation)
+        if rot:
+            # turn the clip, not the art: rotate in, push the fill, rotate back for the content
+            center = Graphene.Point().init(w / 2, h / 2)
+            back = Graphene.Point().init(-w / 2, -h / 2)
+            snapshot.save()
+            snapshot.translate(center)
+            snapshot.rotate(rot)
+            snapshot.translate(back)
         snapshot.push_fill(path, Gsk.FillRule.WINDING)
+        if rot:
+            snapshot.translate(center)
+            snapshot.rotate(-rot)
+            snapshot.translate(back)
         snapshot.append_color(bg, Graphene.Rect().init(0, 0, w, h))
         tex = self.texture
         if tex is None or self._fade.value < 1:
@@ -243,14 +319,20 @@ class ShapeArt(Gtk.Widget):
             if self._fade.value < 1:
                 snapshot.pop()
         snapshot.pop()
+        if rot:
+            snapshot.restore()
 
     def _draw_icon(self, snapshot, w, h, bg: Gdk.RGBA) -> None:
-        theme = Gtk.IconTheme.get_for_display(self.get_display())
         px = max(16, int(min(w, h) / 3))
-        icon = theme.lookup_icon(self._icon_name, None, px, self.get_scale_factor(),
-                                 Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC)
-        lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
-        fg = _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
+        key = (self._icon_name, px, self.get_scale_factor(), bg.red, bg.green, bg.blue)
+        if self._icon_cache is None or self._icon_cache[0] != key:
+            theme = Gtk.IconTheme.get_for_display(self.get_display())
+            icon = theme.lookup_icon(self._icon_name, None, px, self.get_scale_factor(),
+                                     Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC)
+            lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
+            fg = _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
+            self._icon_cache = (key, icon, fg)
+        _key, icon, fg = self._icon_cache
         snapshot.save()
         snapshot.translate(Graphene.Point().init((w - px) / 2, (h - px) / 2))
         icon.snapshot_symbolic(snapshot, px, px, [fg])
@@ -343,11 +425,14 @@ class WavySeekbar(Gtk.Widget):
     # -------------------------------------------------------------- animation
 
     def _ensure_tick(self) -> None:
-        if not self._tick_id and self.get_mapped():
+        if not self._tick_id and self.get_mapped() and not _held(self):
             self._last = 0
             self._tick_id = self.add_tick_callback(self._on_tick)
 
     def _on_tick(self, _w, clock) -> bool:
+        if _held(self):
+            self._tick_id = 0
+            return GLib.SOURCE_REMOVE
         now = clock.get_frame_time()
         dt = min(0.05, (now - self._last) / 1e6) if self._last else 1 / 60
         self._last = now
