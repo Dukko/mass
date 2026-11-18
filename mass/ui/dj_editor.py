@@ -13,7 +13,61 @@ import uuid
 
 from gi.repository import Adw, GLib, Gtk
 
+from .expressive import Sym
+
 log = logging.getLogger(__name__)
+
+AI_ICON = "auto_awesome"  # the default icon for an AI DJ host, everywhere one is shown
+# icons offered in the editor (Material Symbols names)
+DJ_ICONS = (
+    "auto_awesome", "smart_toy", "robot_2", "psychology", "neurology", "emoji_objects",
+    "graphic_eq", "radio", "headphones", "mic", "record_voice_over", "campaign",
+    "music_note", "album", "nightlife", "piano", "face", "sentiment_very_satisfied",
+    "pets", "rocket_launch", "bolt", "local_fire_department", "coffee", "favorite",
+)
+
+
+def dj_icon(backend, host_id: str | None) -> str:
+    """The Material Symbols name for a DJ host: the user's pick, or AI_ICON."""
+    return (backend.config.dj_icons.get(host_id) if host_id else None) or AI_ICON
+
+
+def set_dj_icon(backend, host_id: str, icon: str) -> None:
+    icons = backend.config.dj_icons
+    if icon == AI_ICON:
+        icons.pop(host_id, None)
+    else:
+        icons[host_id] = icon
+    backend.config.save()
+
+
+class IconPicker(Gtk.MenuButton):
+    """A button showing the chosen symbol; its popover is a grid of DJ_ICONS."""
+
+    def __init__(self, icon: str) -> None:
+        super().__init__(valign=Gtk.Align.CENTER, tooltip_text="Icon")
+        self.add_css_class("flat")
+        self.icon = icon
+        self.sym = Sym(icon, 24, fill=True)
+        self.set_child(self.sym)
+        grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=6,
+                           min_children_per_line=6, homogeneous=True, column_spacing=4, row_spacing=4,
+                           margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+        icons = DJ_ICONS if icon in DJ_ICONS else (icon, *DJ_ICONS)
+        for name in icons:
+            b = Gtk.Button(tooltip_text=name.replace("_", " ").capitalize())
+            b.add_css_class("flat")
+            b.add_css_class("circular")
+            b.set_child(Sym(name, 24, fill=True))
+            b.connect("clicked", lambda _b, n=name: self.set_icon(n))
+            grid.append(b)
+        self.pop = Gtk.Popover(child=grid)
+        self.set_popover(self.pop)
+
+    def set_icon(self, name: str) -> None:
+        self.icon = name
+        self.sym.set_symbol(name)
+        self.pop.popdown()
 
 WHEN_TITLES = {
     "start_of_playlist": "When a show starts",
@@ -85,6 +139,7 @@ class DJEditor:
             if self.is_new:
                 base = self.template if self.template is not None else await b.ai("hosts/template")
                 self.host = copy.deepcopy(base)
+                self.host.pop("_icon", None)  # ours (Duplicate), never sent to the server
                 self.host["id"] = _slug(self.host.get("name") or "dj")
             else:
                 self.host = await b.ai("hosts/get", host_id=self.host_id)
@@ -131,6 +186,12 @@ class DJEditor:
         who = Adw.PreferencesGroup(title="Host")
         self.name_row = Adw.EntryRow(title="Name", text=h.get("name", ""))
         who.add(self.name_row)
+        start = self.template.get("_icon") if self.template else None
+        self.icon_picker = IconPicker(start or dj_icon(self.backend, None if self.is_new else h.get("id")))
+        icon_row = Adw.ActionRow(title="Icon", subtitle="Shown for this DJ in Mass")
+        icon_row.add_suffix(self.icon_picker)
+        icon_row.set_activatable_widget(self.icon_picker)
+        who.add(icon_row)
         voice_ids = [""] + [v["uid"] for v in self.voices]
         if h.get("tts_engine") and h["tts_engine"] not in voice_ids:
             voice_ids.append(h["tts_engine"])
@@ -148,7 +209,7 @@ class DJEditor:
 
         # -------- personality
         pers = Adw.PreferencesGroup(title="Personality",
-                                    description="How the DJ talks. Placeholders such as <current_time> are "
+                                    description="How the DJ talks. Placeholders such as &lt;current_time&gt; are "
                                                 "filled in by the server.")
         area, self.instr_buf = _text_area(h.get("instructions", ""), min_height=160)
         pers.add(area)
@@ -293,6 +354,7 @@ class DJEditor:
             self.save_btn.set_sensitive(True)
             self.dlg.add_toast(Adw.Toast(title=GLib.markup_escape_text(f"Couldn’t save: {err}"), timeout=5))
             return
+        set_dj_icon(b, host["id"], self.icon_picker.icon)  # kept by Mass, not the server
         await b.refresh_ai()
         self.dlg.close()
         self._toast_parent(f"Saved {host['name']}")
@@ -301,6 +363,7 @@ class DJEditor:
         h = self._collect()
         copy_ = copy.deepcopy(h)
         copy_["name"] = f"{h['name']} (copy)"
+        copy_["_icon"] = self.icon_picker.icon
         self.dlg.close()
         DJEditor(self.backend, self.parent, template=copy_)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from gi.repository import Adw, GLib, Gtk
 
 from .common import label
-from .dj_editor import DJEditor, new_dj_menu
+from .dj_editor import AI_ICON, DJEditor, dj_icon, new_dj_menu  # noqa: F401 (re-exported)
 from .expressive import ShapeArt, Sym, sym_button
 
 DJ_SHAPE = "burst"
@@ -46,7 +46,8 @@ class DJChip(Gtk.MenuButton):
         self.backend = backend
         self.add_css_class("dj-chip")
         box = Gtk.Box(spacing=8)
-        box.append(Sym("mic", 20, fill=True))
+        self.sym = Sym(AI_ICON, 20, fill=True)
+        box.append(self.sym)
         self.lbl = label("AI DJ", max_width_chars=26)
         box.append(self.lbl)
         box.append(Sym("expand_more", 20))
@@ -66,6 +67,7 @@ class DJChip(Gtk.MenuButton):
         self.set_visible(self.backend.ai_available)
         host = self.backend.dj_for(self._qid())
         self.lbl.set_label(f"DJ · {host['name']}" if host else "Add AI DJ")
+        self.sym.set_symbol(dj_icon(self.backend, host["id"]) if host else AI_ICON)
         (self.add_css_class if host else self.remove_css_class)("on")
 
     def _build(self) -> None:
@@ -77,7 +79,8 @@ class DJChip(Gtk.MenuButton):
             btn = Gtk.Button()
             btn.add_css_class("flat")
             row = Gtk.Box(spacing=12)
-            row.append(Sym("check" if cur and cur["id"] == hid else "mic", 20, fill=bool(cur and cur["id"] == hid)))
+            row.append(Sym("check" if cur and cur["id"] == hid else dj_icon(self.backend, hid), 20,
+                           fill=bool(cur and cur["id"] == hid)))
             t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
             t.append(label(h["name"], "label-l"))
             t.append(label(_excerpt(h.get("instructions", ""), 60), "label-m", "on-variant"))
@@ -167,7 +170,7 @@ class DJTranscript(Gtk.ListBox):
         for idx, seg in upcoming[::-1] + past:
             row = Gtk.ListBoxRow(activatable=False)
             box = Gtk.Box(spacing=14, margin_start=14, margin_end=14, margin_top=12, margin_bottom=12)
-            box.append(Sym("mic", 22, fill=idx == cur))
+            box.append(Sym(dj_icon(self.backend, seg["host_id"]), 22, fill=idx == cur))
             t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
             when = "ON AIR" if idx == cur else ("UP NEXT" if idx > cur else "EARLIER")
             t.append(label(f"{when} · {seg['name'].upper()} · {host_name(self.backend, seg['host_id']).upper()}",
@@ -198,7 +201,7 @@ class AIRadioView(Gtk.ScrolledWindow):
         # -------- current player DJ hero
         hero = Gtk.Box(spacing=24)
         hero.add_css_class("ai-hero")
-        self.hero_art = ShapeArt(120, DJ_SHAPE, "microphone-sensitivity-high-symbolic")
+        self.hero_art = ShapeArt(120, DJ_SHAPE, "sym:" + AI_ICON)
         hero.append(self.hero_art)
         ht = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER, hexpand=True)
         self.hero_over = label("", "overline")
@@ -261,6 +264,7 @@ class AIRadioView(Gtk.ScrolledWindow):
         self.hero_title.set_label(host["name"] if host else "No DJ on this player")
         self.hero_sub.set_label(_excerpt(host.get("instructions", ""), 200) if host else
                                 "Pick a host to talk between your songs: transitions, artist facts, news.")
+        self.hero_art.set_icon("sym:" + (dj_icon(b, host["id"]) if host else AI_ICON))
         self.hero_art.set_spinning(0.4 if host else 0.0)
 
     def _fill_stations(self, stations) -> None:
@@ -307,7 +311,7 @@ class AIRadioView(Gtk.ScrolledWindow):
                 card.add_css_class("on")
             top = Gtk.Box(spacing=12)
             top.append(ShapeArt(48, "circle" if not (cur and cur["id"] == hid) else DJ_SHAPE,
-                                "microphone-sensitivity-high-symbolic"))
+                                "sym:" + dj_icon(self.backend, hid)))
             tt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
             tt.append(label(h["name"], "title-m", max_width_chars=1, hexpand=True))
             voice = (h.get("options") or {}).get("voice") or h.get("tts_engine") or "default voice"

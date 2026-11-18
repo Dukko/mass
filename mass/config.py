@@ -45,6 +45,8 @@ class Config:
     # now playing
     np_tab: str = "lyrics"  # lyrics | queue | dj | about
     wavy_progress: bool = True
+    # AI DJ host id -> Material Symbols name shown for that host (default: AI_ICON)
+    dj_icons: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> Config:

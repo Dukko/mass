@@ -8,7 +8,7 @@ from gi.repository import GLib, Gtk
 from music_assistant_models.enums import PlaybackState, RepeatMode
 
 from .common import ArtImage, artists_str, fmt_time, label
-from .dj import DJ_SHAPE, DJCaption, DJChip, DJTranscript, dj_segment, host_name
+from .dj import DJ_SHAPE, DJCaption, DJChip, DJTranscript, dj_icon, dj_segment, host_name
 from .expressive import Sym, WavySeekbar, sym_button
 from .lyrics import LyricsView
 from .np_options import NowPlayingOptions, audio_quality
@@ -411,7 +411,7 @@ class NowPlayingPage(Gtk.Box):
         self.caption.show_segment(seg, host_name(b, seg["host_id"]) if seg else "")
         if seg:
             # the DJ is talking: mic in a pulsing burst instead of cover art
-            self.art.set_icon("microphone-sensitivity-high-symbolic")
+            self.art.set_icon("sym:" + dj_icon(b, seg["host_id"]))
             self.art.set_shape(DJ_SHAPE)
             self.art.set_spinning(0.9 if playing else 0.0)
         else:
@@ -609,7 +609,7 @@ class MiniPlayer(Gtk.Box):
         q = b.active_queue
         seg = dj_segment(q.current_item) if q else None
         self.art.set_url(None if seg else art_url(b, art_src, 96))
-        self.art.set_icon("microphone-sensitivity-high-symbolic" if seg else "audio-x-generic-symbolic")
+        self.art.set_icon("sym:" + dj_icon(b, seg["host_id"]) if seg else "audio-x-generic-symbolic")
         playing = is_playing(b)
         self.play.sym.set_symbol("pause" if playing else "play_arrow")
         _set_class(self.play, "playing", playing)
