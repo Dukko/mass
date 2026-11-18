@@ -27,10 +27,33 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install flatpak-builder
+        # Ubuntu mirrors sometimes stall: give each attempt 3 minutes, retry up to 3 times
+        timeout-minutes: 12
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq flatpak flatpak-builder
+          APT=(-q -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+          for try in 1 2 3; do
+            if timeout 180 sudo apt-get "${APT[@]}" update &&
+               timeout 180 sudo apt-get "${APT[@]}" install -y flatpak flatpak-builder; then
+              break
+            fi
+            [ "$try" = 3 ] && exit 1
+            echo "::warning::apt attempt $try stalled or failed, retrying"
+            sudo dpkg --configure -a || true  # finish anything a killed attempt left half-done
+            sleep 10
+          done
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Runtime version
+        id: rt
+        run: echo "v=$(grep -m1 '^runtime-version' flatpak/$APP_ID.yml | tr -dc '0-9.')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache GNOME SDK
+        # the Platform + Sdk (~1.5 GB) otherwise download on every run; flatpak-builder still
+        # pulls any newer point release on top
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-sdk-gnome-${{ steps.rt.outputs.v }}  # saved once per runtime version
 
       - name: Import signing key
         id: gpg
