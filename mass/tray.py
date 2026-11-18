@@ -110,6 +110,48 @@ def _pixmaps() -> list[tuple[int, int, bytes]]:
     return out
 
 
+_ICON_CACHE: dict[tuple[str, str], bytes] = {}
+
+
+def _icon_png(name: str, color: str, size: int = 16) -> bytes | None:
+    """A symbolic icon from our own GTK icon theme, recolored and encoded as PNG.
+
+    Tray hosts resolve dbusmenu "icon-name" in *their* icon theme, which often lacks the
+    *-symbolic names (you get a missing-icon checkerboard), so we send the pixels instead.
+    """
+    key = (name, color)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    try:
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Gsk", "4.0")
+        from gi.repository import Gdk, Graphene, Gsk, Gtk
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            return None
+        scale = 2  # crisp on HiDPI bars; hosts scale it down
+        icon = Gtk.IconTheme.get_for_display(display).lookup_icon(
+            name, None, size, scale, Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC)
+        rgba = Gdk.RGBA()
+        rgba.parse(color)
+        snap = Gtk.Snapshot()
+        icon.snapshot_symbolic(snap, size * scale, size * scale, [rgba])
+        node = snap.to_node()
+        if node is None:
+            return None
+        renderer = Gsk.CairoRenderer()
+        renderer.realize(None)
+        tex = renderer.render_texture(node, Graphene.Rect().init(0, 0, size * scale, size * scale))
+        renderer.unrealize()
+        data = tex.save_to_png_bytes().get_data()
+    except Exception:  # noqa: BLE001 - an icon is never worth breaking the menu
+        log.debug("tray icon %s failed", name, exc_info=True)
+        data = None
+    _ICON_CACHE[key] = data
+    return data
+
+
 class Tray:
     def __init__(self, app, backend) -> None:
         self.app, self.backend = app, backend
@@ -124,6 +166,7 @@ class Tray:
         self._watch = 0
         for sig in ("player-updated", "queue-updated", "active-player-changed", "status-changed"):
             backend.connect(sig, lambda *_: self._changed())
+        app.theme.connect("palette-changed", lambda *_: self._changed())  # recolor the menu icons
         self._pending = False
 
     # ------------------------------------------------------------------ lifecycle
@@ -244,20 +287,24 @@ class Tray:
         return [
             (1, {"label": now[:60], "enabled": False}),
             (2, {"type": "separator"}),
-            (3, {"label": "Pause" if playing else "Play", "icon-name": "media-playback-pause-symbolic"
+            (3, {"label": "Pause" if playing else "Play", "icon": "media-playback-pause-symbolic"
                  if playing else "media-playback-start-symbolic"}),
-            (4, {"label": "Next", "icon-name": "media-skip-forward-symbolic"}),
-            (5, {"label": "Previous", "icon-name": "media-skip-backward-symbolic"}),
+            (4, {"label": "Next", "icon": "media-skip-forward-symbolic"}),
+            (5, {"label": "Previous", "icon": "media-skip-backward-symbolic"}),
             (6, {"type": "separator"}),
             (7, {"label": "Hide Mass" if w.get_visible() else "Show Mass"}),
-            (8, {"label": "Quit", "icon-name": "application-exit-symbolic"}),
+            (8, {"label": "Quit", "icon": "application-exit-symbolic"}),
         ]
 
-    @staticmethod
-    def _props(d: dict) -> dict[str, GLib.Variant]:
+    def _props(self, d: dict) -> dict[str, GLib.Variant]:
         out = {}
         for k, v in d.items():
-            out[k] = GLib.Variant("b", v) if isinstance(v, bool) else GLib.Variant("s", v)
+            if k == "icon":
+                color = self.app.theme.palette.get("on_surface", "#e6e1e5")
+                if png := _icon_png(v, color):
+                    out["icon-data"] = GLib.Variant("ay", png)
+            else:
+                out[k] = GLib.Variant("b", v) if isinstance(v, bool) else GLib.Variant("s", v)
         return out
 
     def _layout(self):
@@ -282,6 +329,10 @@ class Tray:
             inv.return_value(GLib.Variant("(a(ia{sv}))", (res,)))
         elif method == "GetProperty":
             i, name = params.unpack()
+            if name == "icon-data":
+                v = self._props(dict(self._items()).get(i, {})).get("icon-data", GLib.Variant("ay", b""))
+                inv.return_value(GLib.Variant("(v)", (v,)))
+                return
             val = dict(self._items()).get(i, {}).get(name, "")
             inv.return_value(GLib.Variant("(v)", (GLib.Variant("b", val) if isinstance(val, bool)
                                                   else GLib.Variant("s", str(val)),)))
