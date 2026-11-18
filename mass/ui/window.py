@@ -15,7 +15,7 @@ from .nowplaying import TABS as NP_TABS
 from .nowplaying import MiniPlayer, NowPlayingPage, is_playing, schedule_refresh
 from .motion import MotionBin, spring_stack
 from .splash import Splash
-from .players import PlayersDialog
+from .players import PlayersView
 from .queue import QueuePage
 from .search import SearchView
 
@@ -81,6 +81,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.search = SearchView(self.backend, self.open_item)
         self.queue = QueuePage(self.backend)
         self.airadio = AIRadioView(self.backend)
+        self.players = PlayersView(self.backend, app.endpoint)
         self.nowplaying = NowPlayingPage(self.backend, app.theme, lambda *_: self.show_players(),
                                          lambda: self.show_page("queue"))
         self.status_page = Adw.StatusPage(icon_name="network-server-symbolic", title="Not connected")
@@ -93,7 +94,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=180,
                                vexpand=True)
         for name, w in (("home", self.home), ("library", self.library), ("search", self.search),
-                        ("queue", self.queue), ("airadio", self.airadio), ("nowplaying", self.nowplaying), ("status", self.status_page)):
+                        ("queue", self.queue), ("airadio", self.airadio), ("players", self.players),
+                        ("nowplaying", self.nowplaying), ("status", self.status_page)):
             self.stack.add_named(w, name)
 
         header = Adw.HeaderBar(show_title=False)
@@ -141,6 +143,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.rail_items[name] = item
             rail.append(item)
         players = RailItem("Players", "speaker", self.show_players)
+        self.rail_items["players"] = players
         rail.append(players)
         rail.append(Gtk.Box(vexpand=True))
         rail.append(RailItem("Settings", "settings", lambda: app.activate_action("preferences", None)))
@@ -221,7 +224,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.mini.set_narrow(narrow)
 
     def show_players(self) -> None:
-        PlayersDialog(self.backend, self.app.endpoint).present(self)
+        self.show_page("players")
 
     def _warm_up(self) -> None:
         """Behind the splash, show every page (and every Now Playing tab) for a couple of frames.
@@ -238,7 +241,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._warmed = True
         self._warming = True
         self.splash.set_status("Getting things ready…")
-        pages = [n for n in ("library", "search", "queue", "airadio", "nowplaying")
+        pages = [n for n in ("library", "search", "queue", "airadio", "players", "nowplaying")
                  if n != "airadio" or self.backend.ai_available]
         np = self.nowplaying
         tabs = [n for n, _t in NP_TABS if n != "dj" or self.backend.ai_available]

@@ -102,9 +102,7 @@ class Shooter(MassApp):
                 w.open_item(albums[0])
                 await shot("album", 4)
             w.nav.pop_to_tag("root")
-            w.show_page("home")
-            w.show_players()
-            await shot("players", 2.5)
+            await page("players")
         except Exception:
             log.exception("script failed")
         self.quit()

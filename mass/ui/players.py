@@ -1,4 +1,4 @@
-"""Player picker sheet: select, power, per-player volume, move playback."""
+"""Players page: select, power, per-player volume, move playback."""
 
 from __future__ import annotations
 
@@ -20,31 +20,27 @@ def player_symbol(p) -> str:
     return "speaker"
 
 
-class PlayersDialog(Adw.Dialog):
+class PlayersView(Gtk.ScrolledWindow):
+    """A rail page like the others: every player, with what it's doing."""
+
     def __init__(self, backend, endpoint) -> None:
-        super().__init__(title="Players", content_width=520, content_height=620)
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self.backend, self.endpoint = backend, endpoint
-        tv = Adw.ToolbarView()
-        hb = Adw.HeaderBar(show_title=False)
-        hb.add_css_class("flat-header")
-        tv.add_top_bar(hb)
-        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_start=20, margin_end=20,
-                      margin_bottom=20)
-        col.append(label("Players", "display-s", ellipsize=False))
-        col.append(label("Choose what Mass controls, or move playback to another speaker.", "body-m",
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=28, margin_end=28,
+                      margin_top=56, margin_bottom=120)
+        col.append(label("Players", "display-m", ellipsize=False))
+        col.append(label("Choose what Mass controls, or move playback to another speaker.", "title-m",
                          "on-variant", ellipsize=False, wrap=True))
-        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, margin_top=8)
+        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, margin_top=20)
         self.list.add_css_class("m3-list")
         self.list.add_css_class("players-list")
         self.list.connect("row-activated", self._on_activate)
         col.append(self.list)
-        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
-        sw.set_child(col)
-        tv.set_content(sw)
-        self.set_child(tv)
-        self._h = [backend.connect("players-changed", lambda *_: self.rebuild()),
-                   backend.connect("player-updated", lambda *_: self._update())]
-        self.connect("closed", lambda *_: [backend.disconnect(h) for h in self._h])
+        self.set_child(Adw.Clamp(maximum_size=900, child=col))
+        backend.connect("players-changed", lambda *_: self.rebuild())
+        backend.connect("active-player-changed", lambda *_: self.rebuild())
+        backend.connect("status-changed", lambda *_: self.rebuild())
+        backend.connect("player-updated", lambda *_: self._update())
         self._rows: dict[str, Gtk.ListBoxRow] = {}
         self.rebuild()
 
@@ -73,7 +69,7 @@ class PlayersDialog(Adw.Dialog):
             top.append(text)
             if active and active.player_id != p.player_id and p.available:
                 top.append(sym_button("cast", f"Move playback to {p.name}", ("m3", "icon", "tonal"),
-                                      cb=lambda pid=p.player_id: (self.backend.transfer_to(pid), self.close())))
+                                      cb=lambda pid=p.player_id: self.backend.transfer_to(pid)))
             if p.powered is not None:
                 sw = Gtk.Switch(active=bool(p.powered), valign=Gtk.Align.CENTER, tooltip_text="Power")
                 sw.connect("notify::active",
@@ -128,4 +124,3 @@ class PlayersDialog(Adw.Dialog):
 
     def _on_activate(self, _l, row) -> None:
         self.backend.set_active_player(row.player_id)
-        self.close()
