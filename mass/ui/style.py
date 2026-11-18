@@ -483,7 +483,7 @@ CSS += f"""
 
 CSS += f"""
 /* ---------- startup splash */
-.mass .splash {{ background: {v('surface')}; }}
+.mass .splash {{ color: {v('surface')}; }}  /* backdrop, drawn by Splash.do_snapshot */
 .mass .splash-shape {{ color: {v('primary-container')}; }}
 .mass .splash-title {{ font-size: 32px; font-weight: 800; letter-spacing: -0.5px; color: {v('on-surface')}; }}
 .mass .splash-status {{ font-size: 14px; color: {v('on-primary-container')}; }}
