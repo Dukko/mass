@@ -28,7 +28,9 @@ jobs:
 
       - name: Install flatpak-builder
         # The runner's default Ubuntu mirror sometimes crawls. Skip recommended extras (they drag
-        # in ffmpeg + Mesa, ~100 MB), give each attempt 3 minutes, and switch mirror on retry.
+        # in ffmpeg + Mesa, ~100 MB) but keep the ones flatpak-builder uses: eu-strip, desktop-file-
+        # validate, the SVG loader + optipng for the appstream icon. 3 min per attempt, new mirror
+        # on retry.
         timeout-minutes: 12
         run: |
           APT=(-q -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
@@ -40,7 +42,8 @@ jobs:
               echo "${MIRRORS[$try]}" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
             fi
             if timeout 180 sudo apt-get "${APT[@]}" update &&
-               timeout 180 sudo apt-get "${APT[@]}" install -y --no-install-recommends flatpak flatpak-builder
+               timeout 180 sudo apt-get "${APT[@]}" install -y --no-install-recommends \
+                 flatpak flatpak-builder elfutils desktop-file-utils librsvg2-common optipng
             then
               break
             fi
