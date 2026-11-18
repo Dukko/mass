@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import weakref
 
+import cairo
 from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk
 
 # [stiffness, damping] for unit mass, from DankMaterialShell's Theme.springSpecs
@@ -139,6 +140,31 @@ def build_shape_path(radii: list[float], w: float, h: float, rotation: float = 0
     return _polygon(pts)
 
 
+MASK_PAD = 2  # transparent device pixels around a shape mask, so filtering never samples a neighbour
+
+
+def build_shape_mask(pts: list[tuple[float, float]], w: float, h: float, scale: float) -> Gdk.Texture:
+    """An outline (from shape_points) as an A8 texture at device resolution, with a clear border.
+
+    We clip with our own mask instead of a Gsk fill node: GTK's GPU renderer rasterizes fill
+    paths into a shared atlas without clearing what's around the path, so after a resize
+    (which churns the glyph cache) stale glyphs and old masks show through the corners.
+    """
+    pw, ph = max(1, math.ceil(w * scale)) + 2 * MASK_PAD, max(1, math.ceil(h * scale)) + 2 * MASK_PAD
+    surf = cairo.ImageSurface(cairo.FORMAT_A8, pw, ph)
+    cr = cairo.Context(surf)
+    cr.translate(MASK_PAD, MASK_PAD)
+    cr.scale(scale, scale)
+    cr.move_to(*pts[0])
+    for x, y in pts[1:]:
+        cr.line_to(x, y)
+    cr.close_path()
+    cr.fill()
+    surf.flush()
+    data = GLib.Bytes.new(bytes(surf.get_data()))
+    return Gdk.MemoryTexture.new(pw, ph, Gdk.MemoryFormat.A8, data, surf.get_stride())
+
+
 def _polygon(pts: list[tuple[float, float]]) -> Gsk.Path:
     b = Gsk.PathBuilder.new()
     b.move_to(*pts[0])
@@ -175,8 +201,9 @@ class ShapeArt(Gtk.Widget):
         self._icon_name = icon
         self._tick_id = 0
         self._last_frame = 0
-        self._path_cache: tuple | None = None
+        self._mask_cache: tuple | None = None
         self._icon_cache: tuple | None = None  # (key, paintable, fg)
+        self._glyph_cache: tuple | None = None  # ((glyph, px), Pango.Layout)
         self.add_css_class("shape-art")
         self.set_halign(Gtk.Align.CENTER)
         self.set_valign(Gtk.Align.CENTER)
@@ -213,7 +240,7 @@ class ShapeArt(Gtk.Widget):
             self._ensure_tick()
         else:
             self._morph.jump(1.0)
-        self._path_cache = None
+        self._mask_cache = None
         self.queue_draw()
 
     def set_spinning(self, speed: float) -> None:
@@ -243,7 +270,7 @@ class ShapeArt(Gtk.Widget):
         self._last_frame = now
         if not self._morph.settled:
             self._morph.step(dt)
-            self._path_cache = None
+            self._mask_cache = None
         if not self._fade.settled:
             self._fade.step(dt)
         if self.spin_speed:
@@ -273,37 +300,39 @@ class ShapeArt(Gtk.Widget):
 
     def do_css_changed(self, change) -> None:  # noqa: D102 - icon theme / colors may have changed
         Gtk.Widget.do_css_changed(self, change)
-        self._icon_cache = None
+        self._icon_cache = self._glyph_cache = None
 
-    def _path(self, w: float, h: float) -> Gsk.Path:
-        """The unrotated outline; only rebuilt when the size changes or the shape is morphing."""
-        key = (w, h)
-        if self._path_cache and self._path_cache[0] == key:
-            return self._path_cache[1]
-        path = _polygon(shape_points(self._from, self._to, self._morph.value, w, h))
-        self._path_cache = (key, path)
-        return path
+    def _mask(self, w: float, h: float) -> Gdk.Texture:
+        """The unrotated shape mask; only rebuilt when the size changes or the shape is morphing."""
+        native = self.get_native()
+        surface = native.get_surface() if native else None
+        scale = surface.get_scale() if surface else float(self.get_scale_factor())
+        key = (w, h, scale)
+        if self._mask_cache and self._mask_cache[0] == key:
+            return self._mask_cache[1]
+        mask = build_shape_mask(shape_points(self._from, self._to, self._morph.value, w, h), w, h, scale)
+        self._mask_cache = (key, mask)
+        return mask
 
     def do_snapshot(self, snapshot) -> None:
         w, h = self.get_width(), self.get_height()
         if w <= 0 or h <= 0:
             return
-        path = self._path(w, h)
         bg = self.get_color()
-        rot = math.degrees(self._rotation)
-        if rot:
-            # turn the clip, not the art: rotate in, push the fill, rotate back for the content
-            center = Graphene.Point().init(w / 2, h / 2)
-            back = Graphene.Point().init(-w / 2, -h / 2)
-            snapshot.save()
-            snapshot.translate(center)
+        mask = self._mask(w, h)
+        pad = MASK_PAD * w / max(1, mask.get_width() - 2 * MASK_PAD)
+        snapshot.push_mask(Gsk.MaskMode.ALPHA)
+        # mask: the shape, turned around the centre (the art itself stays upright)
+        snapshot.save()
+        if rot := math.degrees(self._rotation):
+            snapshot.translate(Graphene.Point().init(w / 2, h / 2))
             snapshot.rotate(rot)
-            snapshot.translate(back)
-        snapshot.push_fill(path, Gsk.FillRule.WINDING)
-        if rot:
-            snapshot.translate(center)
-            snapshot.rotate(-rot)
-            snapshot.translate(back)
+            snapshot.translate(Graphene.Point().init(-w / 2, -h / 2))
+        snapshot.append_scaled_texture(mask, Gsk.ScalingFilter.LINEAR,
+                                       Graphene.Rect().init(-pad, -pad, w + 2 * pad, h + 2 * pad))
+        snapshot.restore()
+        snapshot.pop()
+        # source: placeholder colour, icon, then the art fading in
         snapshot.append_color(bg, Graphene.Rect().init(0, 0, w, h))
         tex = self.texture
         if tex is None or self._fade.value < 1:
@@ -319,15 +348,19 @@ class ShapeArt(Gtk.Widget):
             if self._fade.value < 1:
                 snapshot.pop()
         snapshot.pop()
-        if rot:
-            snapshot.restore()
 
     def _draw_icon(self, snapshot, w, h, bg: Gdk.RGBA) -> None:
         px = max(16, int(min(w, h) / 3))
-        key = (self._icon_name, px, self.get_scale_factor(), bg.red, bg.green, bg.blue)
+        name = self._icon_name
+        if name.startswith("sym:"):  # a Material Symbols glyph, e.g. the AI DJ icon
+            glyph = name[4:]
+            if has_material_symbols():
+                return self._draw_glyph(snapshot, glyph, w, h, px * 1.15, bg)
+            name = SYMBOL_FALLBACKS.get(glyph, "starred-symbolic")
+        key = (name, px, self.get_scale_factor(), bg.red, bg.green, bg.blue)
         if self._icon_cache is None or self._icon_cache[0] != key:
             theme = Gtk.IconTheme.get_for_display(self.get_display())
-            icon = theme.lookup_icon(self._icon_name, None, px, self.get_scale_factor(),
+            icon = theme.lookup_icon(name, None, px, self.get_scale_factor(),
                                      Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC)
             lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
             fg = _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
@@ -336,6 +369,26 @@ class ShapeArt(Gtk.Widget):
         snapshot.save()
         snapshot.translate(Graphene.Point().init((w - px) / 2, (h - px) / 2))
         icon.snapshot_symbolic(snapshot, px, px, [fg])
+        snapshot.restore()
+
+    def _draw_glyph(self, snapshot, glyph: str, w, h, px: float, bg: Gdk.RGBA) -> None:
+        from gi.repository import Pango
+
+        lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
+        fg = _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
+        if self._glyph_cache is None or self._glyph_cache[0] != (glyph, px):
+            layout = self.create_pango_layout(glyph)
+            desc = Pango.FontDescription.from_string("Material Symbols Rounded")
+            desc.set_absolute_size(px * Pango.SCALE)
+            desc.set_variations("FILL=1,wght=500,opsz=24")
+            layout.set_font_description(desc)
+            self._glyph_cache = ((glyph, px), layout)
+        layout = self._glyph_cache[1]
+        _ink, logical = layout.get_pixel_extents()
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init((w - logical.width) / 2 - logical.x,
+                                                 (h - logical.height) / 2 - logical.y))
+        snapshot.append_layout(layout, fg)
         snapshot.restore()
 
 
