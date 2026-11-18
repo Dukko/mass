@@ -264,9 +264,10 @@ class WavySeekbar(Gtk.Widget):
     __gsignals__ = {"seek": (GObject.SignalFlags.RUN_FIRST, None, (float,))}
 
     def __init__(self, height: int = 40, amplitude: float = 4.0, wavelength: float = 36.0,
-                 line_width: float = 4.0, interactive: bool = True) -> None:
+                 line_width: float = 4.0, interactive: bool = True, pad: float = 10.0) -> None:
         super().__init__(hexpand=True)
         self.h = height
+        self.pad = pad  # inset of the line from the edges (room for the thumb / round caps)
         self.A, self.wl, self.lw = amplitude, wavelength, line_width
         self.fraction = 0.0
         self.playing = False
@@ -314,7 +315,7 @@ class WavySeekbar(Gtk.Widget):
     # -------------------------------------------------------------- input
 
     def _pad(self) -> float:
-        return 10.0
+        return self.pad
 
     def _frac_at(self, x: float) -> float:
         w = self.get_width()

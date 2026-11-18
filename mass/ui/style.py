@@ -259,6 +259,27 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 }}
 .mass list.m3-list > row.current .on-variant {{ color: {mix('on-primary-container', 75)}; }}
 .mass list.m3-list > row .title-m {{ font-size: 15px; }}
+/* the same segmented look on recycling ListViews: rows are reused, so the look lives on our own
+   .qrow box (first/last/current are classes set at bind time) and GTK's row stays bare */
+.mass listview.m3-list {{ background: none; }}
+.mass listview.m3-list.full {{ padding: 8px 20px 120px; }}
+.mass listview.m3-list.compact {{ padding: 8px 12px 16px; }}
+.mass listview.m3-list > row {{ background: none; padding: 0; margin-bottom: 2px; }}
+.mass listview.m3-list > row:focus-visible > .qrow {{ outline: 2px solid {v('primary')}; outline-offset: -2px; }}
+.mass .qrow {{
+  background: {v('surface-container')}; border-radius: 6px; min-height: 64px; padding: 8px 8px 8px 12px;
+  transition: background {EFFECTS}, border-radius {FAST_SPATIAL};
+}}
+.mass .qrow.first {{ border-top-left-radius: 24px; border-top-right-radius: 24px; }}
+.mass .qrow.last {{ border-bottom-left-radius: 24px; border-bottom-right-radius: 24px; }}
+.mass listview.m3-list > row:hover > .qrow {{ background: {v('surface-container-high')}; }}
+.mass listview.m3-list > row:active > .qrow {{ border-radius: 20px; }}
+.mass .qrow.current {{
+  background: {v('primary-container')}; color: {v('on-primary-container')}; border-radius: 24px;
+}}
+.mass .qrow.current .on-variant {{ color: {mix('on-primary-container', 75)}; }}
+.mass .qrow .title-m {{ font-size: 15px; }}
+.mass .qrow.dj-row .shape-art {{ color: {v('tertiary-container')}; }}
 
 /* ------------------------------------------------------------ search */
 .mass .search-bar {{
@@ -291,6 +312,8 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
   font-variation-settings: "ROND" 100; }}
 .mass .np-artist {{ font-size: 18px; font-weight: 650; color: {v('primary')}; }}
 .mass .np-album {{ font-size: 15px; color: {v('on-surface-variant')}; }}
+.mass .np-artist link, .mass .np-album link {{ color: inherit; text-decoration: none; }}
+.mass .np-artist link:hover, .mass .np-album link:hover {{ text-decoration: underline; }}
 
 /* expressive slider (volume) */
 .mass scale.m3-slider {{ padding: 0; }}
@@ -437,4 +460,31 @@ CSS += f"""
   font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
   background: {v('tertiary-container')}; color: {v('on-tertiary-container')};
 }}
+"""
+
+CSS += f"""
+/* ---------- M3E press feedback: buttons squish on press and spring back with overshoot */
+.mass button.m3, .mass button.np-tool, .mass menubutton.np-badge > button, .mass .tile {{
+  transition: transform {FAST_SPATIAL}, border-radius {FAST_SPATIAL}, min-width {FAST_SPATIAL},
+              background {EFFECTS}, color {EFFECTS};
+}}
+.mass button.m3:active, .mass button.np-tool:active, .mass menubutton.np-badge > button:active {{
+  transform: scale(0.92);
+}}
+.mass button.m3.large:active {{ transform: scale(0.94); }}
+.mass flowboxchild:active .tile {{ transform: scale(0.96); }}
+"""
+
+CSS += f"""
+/* ---------- DJ editor text areas */
+.mass .dj-text-card {{ border-radius: 16px; }}
+.mass textview.dj-text, .mass textview.dj-text > text {{ background: none; font-size: 14px; }}
+"""
+
+CSS += f"""
+/* ---------- startup splash */
+.mass .splash {{ background: {v('surface')}; }}
+.mass .splash-shape {{ color: {v('primary-container')}; }}
+.mass .splash-title {{ font-size: 32px; font-weight: 800; letter-spacing: -0.5px; color: {v('on-surface')}; }}
+.mass .splash-status {{ font-size: 14px; color: {v('on-primary-container')}; }}
 """

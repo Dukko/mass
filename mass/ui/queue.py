@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
-from .common import ArtImage, artists_str, fmt_time, label, m3_list
+from .common import ArtImage, ItemObject, artists_str, fmt_time, label
 from .dj import DJ_SHAPE, dj_segment, host_name
 from .expressive import ShapeArt, sym_button
+from .motion import after_motion
+
 
 
 class QueuePage(Gtk.Box):
@@ -36,13 +38,20 @@ class QueuePage(Gtk.Box):
         self.stack = Gtk.Stack(vexpand=True)
         self.stack.add_named(Adw.StatusPage(icon_name="view-list-symbolic", title="Queue is empty",
                                             description="Play something from your library or search."), "empty")
-        self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        clamp = Adw.Clamp(maximum_size=900, margin_top=8, margin_bottom=16 if compact else 120,
-                          margin_start=12 if compact else 20, margin_end=12 if compact else 20)
-        self.list = m3_list()
-        self.list.connect("row-activated", lambda _l, row: self.backend.play_index(row.item.queue_item_id))
-        clamp.set_child(self.list)
-        self.scroller.set_child(clamp)
+        # a recycling ListView: only the rows on screen exist, however long the queue is
+        self.store = Gio.ListStore(item_type=ItemObject)
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._setup)
+        factory.connect("bind", self._bind)
+        self.list = Gtk.ListView(model=Gtk.NoSelection(model=self.store), factory=factory,
+                                 single_click_activate=True)
+        self.list.add_css_class("m3-list")
+        self.list.connect("activate", lambda _l, pos: self.backend.play_index(
+            self.store.get_item(pos).item.queue_item_id))
+        # scrollable lists must not have margins (GTK asserts); spacing comes from CSS padding
+        self.list.add_css_class("compact" if compact else "full")
+        clamp = Adw.ClampScrollable(maximum_size=900, child=self.list)
+        self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
         self.stack.add_named(self.scroller, "list")
         self.append(self.stack)
 
@@ -66,7 +75,7 @@ class QueuePage(Gtk.Box):
             self._highlight(q.current_index)
 
     def reload(self) -> None:
-        if not self.get_mapped():
+        if not self.get_mapped() and not self.compact:
             self._pending = True
             return
         self._pending = False
@@ -83,13 +92,12 @@ class QueuePage(Gtk.Box):
             items = await self.backend.client.player_queues.get_queue_items(qid, limit=500)
             q2 = self.backend.active_queue
             if q2 and q2.queue_id == qid:
-                self._populate(q2, items)
+                after_motion(self, lambda: self._populate(q2, items))
 
         self.backend.run(load())
 
     def _clear(self) -> None:
-        while row := self.list.get_row_at_index(0):
-            self.list.remove(row)
+        self.store.remove_all()
 
     def _populate(self, q, items) -> None:
         ids = [i.queue_item_id for i in items]
@@ -99,62 +107,84 @@ class QueuePage(Gtk.Box):
         vadj = self.scroller.get_vadjustment()
         scroll = vadj.get_value() if q.queue_id == self._qid else 0
         self._qid, self._ids = q.queue_id, ids
-        self._clear()
         if not items:
+            self._clear()
             self.summary.set_label(q.display_name)
             self.stack.set_visible_child_name("empty")
             return
         self.stack.set_visible_child_name("list")
         total = sum(i.duration or 0 for i in items)
         self.summary.set_label(f"{q.display_name} · {len(items)} tracks · {fmt_time(total)}")
-        for it in items:
-            self.list.append(self._row(it))
-        self._current_index = None
-        self._highlight(q.current_index)
-        if not self.compact:  # compact mode scrolls to the current track instead
+        self._current_index = q.current_index
+        self.store.splice(0, self.store.get_n_items(), [ItemObject(i) for i in items])  # no widgets made here
+        if self.compact:
+            self._scroll_to_current()
+        else:
             GLib.idle_add(lambda: (vadj.set_value(scroll), False)[1])
 
-    def _row(self, it) -> Gtk.ListBoxRow:
-        mi = it.media_item
-        row = Gtk.ListBoxRow(activatable=True)
-        row.item = it
-        box = Gtk.Box(spacing=14, margin_start=12, margin_end=8, margin_top=8, margin_bottom=8)
-        seg = dj_segment(it)
-        if seg:
-            row.add_css_class("dj-row")
-            art = ShapeArt(48, DJ_SHAPE, "microphone-sensitivity-high-symbolic")
-        else:
-            art = ArtImage(self.backend, 48)
-            art.set_url(self.backend.image_url(it, 96))
+    # ------------------------------------------------------------------ rows (recycled)
+
+    def _setup(self, _f, li) -> None:
+        box = Gtk.Box(spacing=14)
+        box.add_css_class("qrow")  # styled here, not on GTK's row: touching that from Python breaks it
+        art = ArtImage(self.backend, 48)
+        dj_art = ShapeArt(48, DJ_SHAPE, "microphone-sensitivity-high-symbolic")
         box.append(art)
+        box.append(dj_art)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=2)
-        if seg:
-            text.append(label(f"{seg['name']} · {host_name(self.backend, seg['host_id'])}", "title-m"))
-            sub = label(seg["text"] or "Preparing…", "body-m", "on-variant", ellipsize=False, wrap=True, lines=2)
-            sub.set_ellipsize(3)
-            text.append(sub)
-        else:
-            text.append(label(getattr(mi, "name", None) or it.name, "title-m"))
-            text.append(label(artists_str(mi) if mi else "", "body-m", "on-variant"))
+        title = label("", "title-m")
+        sub = label("", "body-m", "on-variant")
+        sub.set_lines(2)
+        text.append(title)
+        text.append(sub)
         box.append(text)
-        box.append(label(fmt_time(it.duration) if it.duration else "", "label-l", "on-variant", "numeric",
-                         ellipsize=False))
-        box.append(sym_button("low_priority", "Play next", cb=lambda i=it.queue_item_id:
-                              self.backend.move_queue_item_next(i)))
-        box.append(sym_button("delete", "Remove", cb=lambda i=it.queue_item_id: self.backend.delete_queue_item(i)))
-        row.set_child(box)
-        return row
+        dur = label("", "label-l", "on-variant", "numeric", ellipsize=False)
+        box.append(dur)
+        nxt = sym_button("low_priority", "Play next",
+                         cb=lambda: box.item and self.backend.move_queue_item_next(box.item.queue_item_id))
+        rm = sym_button("delete", "Remove",
+                        cb=lambda: box.item and self.backend.delete_queue_item(box.item.queue_item_id))
+        box.append(nxt)
+        box.append(rm)
+        box.item = None
+        box.parts = (art, dj_art, title, sub, dur)
+        li.set_child(box)
+
+    def _bind(self, _f, li) -> None:
+        box = li.get_child()
+        it = li.get_item().item
+        pos = li.get_position()
+        art, dj_art, title, sub, dur = box.parts
+        box.item = it
+        mi = it.media_item
+        seg = dj_segment(it)
+        art.set_visible(not seg)
+        dj_art.set_visible(bool(seg))
+        if seg:
+            title.set_label(f"{seg['name']} · {host_name(self.backend, seg['host_id'])}")
+            sub.set_label(seg["text"] or "Preparing…")
+            sub.set_wrap(True)
+        else:
+            art.set_url(self.backend.image_url(it, 96))
+            title.set_label(getattr(mi, "name", None) or it.name)
+            sub.set_label(artists_str(mi) if mi else "")
+            sub.set_wrap(False)
+        dur.set_label(fmt_time(it.duration) if it.duration else "")
+        n = self.store.get_n_items()
+        for cls, on in (("current", pos == self._current_index), ("dj-row", bool(seg)),
+                        ("first", pos == 0), ("last", pos == n - 1)):
+            (box.add_css_class if on else box.remove_css_class)(cls)
 
     def _highlight(self, index: int | None) -> None:
-        if self._current_index is not None and (old := self.list.get_row_at_index(self._current_index)):
-            old.remove_css_class("current")
-        self._current_index = index
-        if index is not None and (row := self.list.get_row_at_index(index)):
-            row.add_css_class("current")
-            if self.compact:
-                GLib.idle_add(lambda: (self._scroll_to(row), False)[1])
+        old, self._current_index = self._current_index, index
+        n = self.store.get_n_items()
+        for pos in {old, index}:
+            if pos is not None and 0 <= pos < n:
+                self.store.items_changed(pos, 1, 1)  # rebind just those rows
+        if self.compact:
+            self._scroll_to_current()
 
-    def _scroll_to(self, row: Gtk.ListBoxRow) -> None:
-        ok, rect = row.compute_bounds(self.list)
-        if ok:
-            self.scroller.get_vadjustment().set_value(max(0.0, rect.get_y() - 8))
+    def _scroll_to_current(self) -> None:
+        idx = self._current_index
+        if idx is not None and 0 <= idx < self.store.get_n_items():
+            GLib.idle_add(lambda: (self.list.scroll_to(idx, Gtk.ListScrollFlags.NONE, None), False)[1])

@@ -12,6 +12,7 @@ from .dj import DJ_SHAPE, DJCaption, DJChip, DJTranscript, dj_segment, host_name
 from .expressive import Sym, WavySeekbar, sym_button
 from .lyrics import LyricsView
 from .np_options import NowPlayingOptions, audio_quality
+from .motion import spring_stack
 from .queue import QueuePage
 
 log = logging.getLogger(__name__)
@@ -174,6 +175,9 @@ class NowPlayingPage(Gtk.Box):
         self.title.set_ellipsize(3)
         self.artist = label("", "np-artist")
         self.album = label("", "np-album")
+        for w in (self.artist, self.album):
+            w.connect("activate-link", self._open_link)
+        self._links: dict[str, object] = {}
         for w in (self.title, self.artist, self.album):
             titles.append(w)
         trow.append(titles)
@@ -272,7 +276,8 @@ class NowPlayingPage(Gtk.Box):
         self.stack.add_named(djs, "dj")
         self.about = TrackAbout()
         self.stack.add_named(self.about, "about")
-        panel.append(self.stack)
+        self.tab_motion = spring_stack(self.stack, preset="fast", directional=[t[0] for t in TABS])
+        panel.append(self.tab_motion)
         self._lyrics_key: str | None = None
 
         foot = Gtk.Box(spacing=8, margin_start=20, margin_end=16, margin_bottom=16, margin_top=8)
@@ -348,15 +353,49 @@ class NowPlayingPage(Gtk.Box):
             return
         schedule_refresh(self)
 
+    def _set_links(self, artist: str, album: str) -> None:
+        """Artist names and the album as links to their detail pages (plain text when unknown)."""
+        q = self.backend.active_queue
+        mi = current_media_item(self.backend)
+        if q and q.current_item and dj_segment(q.current_item):
+            mi = None
+        esc = GLib.markup_escape_text
+        artists = [a for a in (getattr(mi, "artists", None) or []) if getattr(a, "item_id", None)]
+        key = (artist, album, tuple(a.item_id for a in artists), getattr(getattr(mi, "album", None), "item_id", None))
+        if key == getattr(self, "_links_key", None):
+            return
+        self._links_key = key
+        self._links = {}
+        if artists:
+            parts = []
+            for i, a in enumerate(artists):
+                self._links[f"artist:{i}"] = a
+                parts.append(f'<a href="artist:{i}" title="Open artist">{esc(a.name)}</a>')
+            self.artist.set_markup(", ".join(parts))
+        else:
+            self.artist.set_text(artist)
+        alb = getattr(mi, "album", None)
+        if alb and getattr(alb, "item_id", None):
+            self._links["album"] = alb
+            self.album.set_markup(f'<a href="album" title="Open album">{esc(alb.name)}</a>')
+        else:
+            self.album.set_text(album)
+
+    def _open_link(self, _lbl, uri: str) -> bool:
+        item = self._links.get(uri)
+        win = self.get_root()
+        if item is not None and hasattr(win, "open_item"):
+            win.open_item(item)
+        return True
+
     def refresh(self) -> None:
         b = self.backend
         p, q = b.active_player, b.active_queue
         title, artist, album, duration, art_src = track_info(b)
         if self.title.get_label() != title:
             self.title.set_label(title)
-        self.artist.set_label(artist)
+        self._set_links(artist, album)
         self.artist.set_visible(bool(artist))
-        self.album.set_label(album)
         self.album.set_visible(bool(album))
         self.player_label.set_label(p.name if p else "No player")
         if art_src is None and q and dj_segment(q.current_item):
@@ -537,8 +576,8 @@ class MiniPlayer(Gtk.Box):
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
         self.title = label("", "title-s", max_width_chars=1, hexpand=True)
         self.subtitle = label("", "label-m", "on-variant", max_width_chars=1)
-        self.progress = WavySeekbar(height=10, amplitude=2.0, wavelength=18, line_width=3, interactive=False)
-        self.progress.set_margin_start(-8)
+        self.progress = WavySeekbar(height=10, amplitude=2.0, wavelength=18, line_width=3, interactive=False,
+                                    pad=2)  # flush with the text above
         text.append(self.title)
         text.append(self.subtitle)
         text.append(self.progress)

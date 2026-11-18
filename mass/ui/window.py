@@ -11,10 +11,15 @@ from .expressive import Sym
 from .dj import AIRadioView
 from .home import HomeView
 from .library import DetailPage, LibraryView
+from .nowplaying import TABS as NP_TABS
 from .nowplaying import MiniPlayer, NowPlayingPage, is_playing, schedule_refresh
+from .motion import MotionBin, spring_stack
+from .splash import Splash
 from .players import PlayersDialog
 from .queue import QueuePage
 from .search import SearchView
+
+SPLASH_TIMEOUT_S = 12  # never keep the splash up longer than this (slow or unreachable server)
 
 MENU_XML = """
 <interface><menu id="m">
@@ -91,7 +96,9 @@ class MainWindow(Adw.ApplicationWindow):
         header = Adw.HeaderBar(show_title=False)
         header.add_css_class("flat-header")
         self.banner = Adw.Banner()
-        root = Adw.ToolbarView(content=self.stack, top_bar_style=Adw.ToolbarStyle.FLAT)
+        self.page_motion = spring_stack(self.stack)
+        self._warmed = False
+        root = Adw.ToolbarView(content=self.page_motion, top_bar_style=Adw.ToolbarStyle.FLAT)
         root.add_top_bar(header)
         root.add_top_bar(self.banner)
         self.update_banner = Adw.Banner(button_label="Restart")
@@ -142,8 +149,19 @@ class MainWindow(Adw.ApplicationWindow):
 
         # ------------------------------------------------ floating mini player
         self.mini = MiniPlayer(self.backend, lambda: self.show_page("nowplaying"))
+        # the pill springs up from the bottom edge whenever it (re)appears
+        self.mini_motion = MotionBin(self.mini, dy=56, scale=0.9, preset="bouncy",
+                                     halign=Gtk.Align.CENTER, valign=Gtk.Align.END)
+        self.mini.connect("notify::visible", lambda m, _p: m.get_visible() and self.mini_motion.play())
         overlay = Gtk.Overlay(child=body)
-        overlay.add_overlay(self.mini)
+        overlay.add_overlay(self.mini_motion)
+        # startup splash over everything while we connect and warm the pages up behind it
+        self.splash = Splash()
+        overlay.add_overlay(self.splash)
+        if not self.backend.config.server_url:
+            self.splash.set_visible(False)  # first run: go straight to sign-in
+        else:
+            GLib.timeout_add_seconds(SPLASH_TIMEOUT_S, lambda: (self._end_splash(), False)[1])
         self.revealer_mini = self.mini
         self.toasts = Adw.ToastOverlay(child=overlay)
         self.set_content(self.toasts)
@@ -200,14 +218,70 @@ class MainWindow(Adw.ApplicationWindow):
     def show_players(self) -> None:
         PlayersDialog(self.backend, self.app.endpoint).present(self)
 
+    def _warm_up(self) -> None:
+        """Behind the splash, show every page (and every Now Playing tab) for a couple of frames.
+
+        GTK styles and lays a page out the first time it's shown, and for the bigger pages that
+        takes long enough to stutter a transition. Doing it all here, hidden by the splash, makes
+        every first visit as cheap as a later one.
+        """
+        if self._warmed or not self.backend.connected or not self.splash.get_visible():
+            return self._end_splash()
+        if not self.get_mapped():  # started in the background: warm up when the window first shows
+            hid = self.connect("map", lambda *_: (self.disconnect(hid), self._warm_up()))
+            return
+        self._warmed = True
+        self.splash.set_status("Getting things ready…")
+        pages = [n for n in ("library", "search", "queue", "airadio", "nowplaying")
+                 if n != "airadio" or self.backend.ai_available]
+        np = self.nowplaying
+        tabs = [n for n, _t in NP_TABS if n != "dj" or self.backend.ai_available]
+        steps = [("page", n) for n in pages] + [("tab", t) for t in tabs]
+        orig_page, orig_tab = self.stack.get_visible_child_name(), np.stack.get_visible_child_name()
+        self.page_motion.silent = np.tab_motion.silent = True
+
+        def show(step):
+            kind, name = step
+            if kind == "page":
+                self.stack.set_visible_child_name(name)
+            else:
+                self.stack.set_visible_child_name("nowplaying")
+                np.stack.set_visible_child_name(name)
+
+        it = iter(steps)
+        frames = [0]
+
+        def tick(*_):
+            frames[0] += 1
+            if frames[0] % 2:  # each step gets a frame to lay out before the next
+                return True
+            step = next(it, None)
+            if step is not None:
+                show(step)
+                return True
+            np.stack.set_visible_child_name(orig_tab)
+            self.stack.set_visible_child_name(self._page if self._page != "status" else orig_page)
+            self.page_motion.silent = np.tab_motion.silent = False
+            GLib.timeout_add(120, lambda: (self._end_splash(), False)[1])  # let the last layout land
+            return False
+
+        show(next(it))
+        self.add_tick_callback(tick)
+
+    def _end_splash(self) -> None:
+        self.splash.dismiss()
+
     def _on_status(self, _b, status: str, detail: str) -> None:
         if status == Status.CONNECTED:
             self.banner.set_revealed(False)
             if self._page == "status" or self.stack.get_visible_child_name() == "status":
                 self.show_page("home")
             self._sync_mini()
+            # give the first data a moment to arrive, so the pages warm up with real content
+            GLib.timeout_add(700, lambda: (self._warm_up(), False)[1])
             return
         if status == Status.AUTH_REQUIRED:
+            self._end_splash()
             self.status_page.set_title("Not connected")
             self.status_page.set_description(GLib.markup_escape_text(detail))
             self.stack.set_visible_child_name("status")

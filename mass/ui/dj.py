@@ -5,6 +5,7 @@ from __future__ import annotations
 from gi.repository import Adw, GLib, Gtk
 
 from .common import label
+from .dj_editor import DJEditor, new_dj_menu
 from .expressive import ShapeArt, Sym, sym_button
 
 DJ_SHAPE = "burst"
@@ -85,11 +86,19 @@ class DJChip(Gtk.MenuButton):
             btn.connect("clicked", lambda _b, i=hid: (self.pop.popdown(), self.backend.set_dj(i)))
             box.append(btn)
         if cur:
-            off = Gtk.Button(label="Turn DJ off", margin_top=6)
+            acts = Gtk.Box(spacing=8, margin_top=6, homogeneous=True)
+            edit = Gtk.Button(label=f"Edit {cur['name']}")
+            edit.get_child().set_ellipsize(3)
+            for c in ("m3", "outlined"):
+                edit.add_css_class(c)
+            edit.connect("clicked", lambda *_: (self.pop.popdown(), DJEditor(self.backend, self, cur["id"])))
+            acts.append(edit)
+            off = Gtk.Button(label="Turn DJ off")
             for c in ("m3", "tonal"):
                 off.add_css_class(c)
             off.connect("clicked", lambda *_: (self.pop.popdown(), self.backend.set_dj(None)))
-            box.append(off)
+            acts.append(off)
+            box.append(acts)
         self.pop.set_child(box)
 
 
@@ -215,7 +224,10 @@ class AIRadioView(Gtk.ScrolledWindow):
         col.append(self.stations)
 
         # -------- hosts
-        col.append(label("Hosts", "section-title", margin_top=8))
+        hosts_head = Gtk.Box(spacing=12, margin_top=8)
+        hosts_head.append(label("Hosts", "section-title", hexpand=True))
+        hosts_head.append(new_dj_menu(backend, self))
+        col.append(hosts_head)
         self.hosts = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
                                  min_children_per_line=1, column_spacing=12, row_spacing=12, homogeneous=True)
         col.append(self.hosts)
@@ -312,7 +324,11 @@ class AIRadioView(Gtk.ScrolledWindow):
             for c in ("m3", "tonal"):
                 use.add_css_class(c)
             use.connect("clicked", lambda _b, i=hid: self.backend.set_dj(i))
-            card.append(use)
+            acts = Gtk.Box(spacing=8)
+            acts.append(use)
+            acts.append(sym_button("edit", "Edit DJ", ("m3", "icon", "tonal"),
+                                   cb=lambda i=hid: DJEditor(self.backend, self, i)))
+            card.append(acts)
             self.hosts.append(card)
 
     def _start(self, station) -> None:

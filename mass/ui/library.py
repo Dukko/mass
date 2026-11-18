@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from gi.repository import Adw, Gdk, Gio, Gtk
 from music_assistant_models.enums import MediaType, QueueOption, SortDirection, SortField
 
@@ -17,8 +20,14 @@ from .common import (
     media_row,
 )
 from .expressive import Sym, sym_button
+from .motion import pop_in
 
 PAGE = 100
+log = logging.getLogger(__name__)
+
+# artist page album groups, in display order
+ALBUM_GROUPS = (("Albums", {"album", "unknown", "soundtrack", "live"}), ("Singles & EPs", {"single", "ep"}),
+                ("Compilations", {"compilation"}))
 
 
 def subtitle_for(item) -> str:
@@ -33,7 +42,8 @@ def subtitle_for(item) -> str:
     if mt == MediaType.RADIO:
         return "Radio"
     if mt == MediaType.ARTIST:
-        return "Artist"
+        genres = sorted(getattr(getattr(item, "metadata", None), "genres", None) or [])
+        return " · ".join(g.title() for g in genres[:3]) or "Artist"
     return ""
 
 
@@ -159,7 +169,7 @@ class DetailPage(Adw.NavigationPage):
         self.set_child(tv)
 
         head = Gtk.Box(spacing=32)
-        art = ArtImage(backend, 240, fetch_size=480)
+        art = self.art = ArtImage(backend, 240, fetch_size=480)
         art.set_item(item)
         head.append(art)
         info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.END, hexpand=True)
@@ -167,7 +177,8 @@ class DetailPage(Adw.NavigationPage):
         title = label(item.name, "display-s", ellipsize=False, wrap=True, lines=3)
         title.set_wrap_mode(2)
         info.append(title)
-        info.append(label(subtitle_for(item), "title-m", "on-variant"))
+        self.subtitle = label(subtitle_for(item), "title-m", "on-variant")
+        info.append(self.subtitle)
         btns = Gtk.Box(spacing=8, margin_top=16)
         play = Gtk.Button(action_name="media.play")
         for c in ("m3", "filled", "large"):
@@ -186,7 +197,7 @@ class DetailPage(Adw.NavigationPage):
         btns.append(more)
         info.append(btns)
         head.append(info)
-        attach_media_actions(head, backend, lambda: item)
+        attach_media_actions(head, backend, lambda: self.item)
         self.col.append(head)
 
         self.spinner = Adw.Spinner(height_request=40, margin_top=24)
@@ -199,43 +210,149 @@ class DetailPage(Adw.NavigationPage):
             qid = getattr(target, "queue_id", None) or target.player_id
             b.run(b.client.player_queues.play_media(qid, self.item, option=QueueOption.REPLACE, shuffle=True))
 
+    async def _full_item(self):
+        """The complete item (images, genres, bio) when we were handed a bare ItemMapping."""
+        it = self.item
+        if getattr(it, "metadata", None) is not None and getattr(it, "provider_mappings", None):
+            return it
+        try:
+            full = await self.backend.client.music.get_item(it.media_type, it.item_id, it.provider)
+        except Exception as err:  # noqa: BLE001
+            log.debug("could not resolve %s: %s", getattr(it, "uri", it), err)
+            return it
+        self.item = full
+        self.art.set_item(full)
+        self.subtitle.set_label(subtitle_for(full))
+        return full
+
+    def _sources(self, it) -> list[tuple[str, str]]:
+        """(item_id, provider) for the item itself, then each streaming provider it maps to."""
+        out = [(it.item_id, it.provider)]
+        for m in getattr(it, "provider_mappings", None) or []:
+            pair = (m.item_id, m.provider_instance)
+            if pair not in out and getattr(m, "available", True):
+                out.append(pair)
+        return out
+
+    async def _stream(self, fetch, sources, on_update, timeout: float = 60.0) -> None:
+        """Fetch from every source at once; call on_update(all results so far, in source order)
+        each time one answers, so fast sources show up without waiting for slow ones."""
+        results: list[list] = [[] for _ in sources]
+
+        async def one(idx, item_id, prov):
+            try:
+                results[idx] = await asyncio.wait_for(fetch(item_id, prov), timeout)
+            except Exception as err:  # noqa: BLE001
+                log.debug("%s from %s failed: %r", fetch.__name__, prov, err)
+                return
+            if results[idx]:
+                on_update([x for lst in results for x in lst])
+
+        await asyncio.gather(*(one(i, iid, p) for i, (iid, p) in enumerate(sources)))
+
+    @staticmethod
+    def _clear(box: Gtk.Box) -> None:
+        while (c := box.get_first_child()) is not None:
+            box.remove(c)
+
+    def _slot(self) -> Gtk.Box:
+        """A placeholder in page order, so sections can fill in whenever their data arrives."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        self.col.insert_child_after(box, self.spinner.get_prev_sibling())  # just above the spinner
+        return box
+
     async def _load(self) -> None:
         music = self.backend.client.music
-        it = self.item
         try:
+            it = await self._full_item()
             if it.media_type == MediaType.ALBUM:
                 self._add_tracks(await music.get_album_tracks(it.item_id, it.provider), numbered=True)
+                self._about(it)
             elif it.media_type == MediaType.PLAYLIST:
                 self._add_tracks(await music.get_playlist_tracks(it.item_id, it.provider))
             elif it.media_type == MediaType.ARTIST:
-                albums = await music.get_artist_albums(it.item_id, it.provider)
-                tracks = await music.get_artist_tracks(it.item_id, it.provider)
-                if tracks:
-                    self._section("Popular")
-                    self._add_tracks(tracks[:10])
-                if albums:
-                    self._section("Albums")
-                    flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=8,
-                                       min_children_per_line=2, homogeneous=True, activate_on_single_click=True)
-                    for a in albums:
-                        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-                        card.add_css_class("tile")
-                        art = ArtImage(self.backend, 150)
-                        art.set_item(a)
-                        card.append(art)
-                        card.append(label(a.name, "title-s", max_width_chars=1, margin_top=6))
-                        card.append(label(str(getattr(a, "year", "") or ""), "label-m", "on-variant"))
-                        card.album = a
-                        flow.append(card)
-                    flow.connect("child-activated", lambda _f, ch: self.open_item(ch.get_child().album))
-                    self.col.append(flow)
+                await self._load_artist(it)
         finally:
             self.spinner.set_visible(False)
 
-    def _section(self, title: str) -> None:
-        self.col.append(label(title, "section-title", margin_top=12))
+    async def _load_artist(self, it) -> None:
+        music = self.backend.client.music
+        sources = self._sources(it)
+        # the library only knows what you saved; the providers know the whole discography.
+        # Each section fills its own slot as soon as it's ready (a provider can be slow).
+        tracks_slot, albums_slot = self._slot(), self._slot()
 
-    def _add_tracks(self, tracks, numbered: bool = False) -> None:
+        def show_tracks(items):
+            seen, out = set(), []
+            for t in items:
+                if (key := t.name.casefold()) not in seen:
+                    seen.add(key)
+                    out.append(t)
+            self._clear(tracks_slot)
+            self._section("Popular", tracks_slot)
+            self._add_tracks(out[:10], parent=tracks_slot)
+
+        def show_albums(items):
+            seen, out = set(), []
+            for a in items:
+                if (key := (a.name.casefold(), getattr(a, "year", None))) not in seen:  # library copy wins
+                    seen.add(key)
+                    out.append(a)
+            out.sort(key=lambda a: getattr(a, "year", None) or 0, reverse=True)
+            self._clear(albums_slot)
+            for title, kinds in ALBUM_GROUPS:
+                group = [a for a in out if str(getattr(a.album_type, "value", a.album_type) or "unknown") in kinds]
+                if group:
+                    self._section(title, albums_slot)
+                    self._album_grid(group, albums_slot)
+
+        self._about(it)  # bio is already here; it sits below the slots
+        await asyncio.gather(self._stream(music.get_artist_tracks, sources, show_tracks),
+                             self._stream(music.get_artist_albums, sources, show_albums))
+
+    def _album_grid(self, albums, parent: Gtk.Box | None = None) -> None:
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=8,
+                           min_children_per_line=2, homogeneous=True, activate_on_single_click=True)
+        for i, a in enumerate(albums):
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            card.add_css_class("tile")
+            art = ArtImage(self.backend, 150)
+            art.set_item(a)
+            card.append(art)
+            card.append(label(a.name, "title-s", max_width_chars=1, margin_top=6))
+            card.append(label(str(getattr(a, "year", "") or ""), "label-m", "on-variant"))
+            tile = pop_in(card, delay_ms=min(i, 12) * 35)  # staggered, settling with a bounce
+            tile.album = a
+            flow.append(tile)
+        flow.connect("child-activated", lambda _f, ch: self.open_item(ch.get_child().album))
+        (parent or self.col).append(flow)
+
+    def _about(self, it) -> None:
+        desc = (getattr(getattr(it, "metadata", None), "description", None) or "").strip()
+        if not desc:
+            return
+        self._section("About")
+        text = label(desc, "body-l", "on-variant", ellipsize=False, wrap=True, lines=6, selectable=True)
+        text.set_wrap_mode(2)
+        text.set_ellipsize(3)
+        self.col.append(text)
+        if len(desc) > 400:
+            more = Gtk.Button(label="Show more", halign=Gtk.Align.START)
+            more.add_css_class("flat")
+
+            def toggle(btn):
+                expanded = text.get_lines() == -1
+                text.set_lines(6 if expanded else -1)
+                text.set_ellipsize(3 if expanded else 0)
+                btn.set_label("Show more" if expanded else "Show less")
+
+            more.connect("clicked", toggle)
+            self.col.append(more)
+
+    def _section(self, title: str, parent: Gtk.Box | None = None) -> None:
+        (parent or self.col).append(label(title, "section-title", margin_top=12))
+
+    def _add_tracks(self, tracks, numbered: bool = False, parent: Gtk.Box | None = None) -> None:
         lb = m3_list()
         for t in tracks:
             lead = None
@@ -246,7 +363,7 @@ class DetailPage(Adw.NavigationPage):
                             trailing_text=fmt_time(t.duration) if t.duration else "", play_button=False,
                             on_activate=self._play_from)
             lb.append(row)
-        self.col.append(lb)
+        (parent or self.col).append(pop_in(lb, dy=20, scale=0.98, preset="expressive"))
 
     def _play_from(self, track) -> None:
         if self.item.media_type in (MediaType.ALBUM, MediaType.PLAYLIST):

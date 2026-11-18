@@ -103,8 +103,8 @@ class ArtImage(ShapeArt):
             data = await self.backend.fetch_image(url)
             if url != self._url or not data:
                 return
-            try:
-                tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            try:  # decode off the main thread: a big JPEG takes long enough to drop frames
+                tex = await asyncio.to_thread(Gdk.Texture.new_from_bytes, GLib.Bytes.new(data))
             except GLib.Error:
                 return
             _TEXTURES[url] = (tex, data)

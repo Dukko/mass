@@ -18,7 +18,7 @@ from music_assistant_client import MusicAssistantClient
 from music_assistant_client.auth_helpers import login_with_token
 from music_assistant_client.exceptions import CannotConnect
 from music_assistant_models.errors import AuthenticationFailed, AuthenticationRequired
-from music_assistant_models.enums import EventType, PlaybackState, RepeatMode
+from music_assistant_models.enums import EventType, MediaType, PlaybackState, RepeatMode
 from music_assistant_models.event import MassEvent
 from music_assistant_models.player import Player
 from music_assistant_models.player_queue import PlayerQueue
@@ -28,6 +28,11 @@ from . import APP_NAME, secrets
 
 log = logging.getLogger(__name__)
 
+
+# media types the library can favorite
+FAVORITABLE = {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.RADIO,
+               MediaType.AUDIOBOOK, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
+IMAGE_RETRY_AFTER = 300  # seconds before retrying an image that failed to load
 
 class Status:
     IDLE = "idle"
@@ -59,6 +64,7 @@ class Backend(GObject.Object):
         self._runner: asyncio.Task | None = None
         self._token: str | None = None
         self._image_cache: dict[str, bytes] = {}
+        self._image_failed: dict[str, float] = {}  # url -> monotonic time to retry after
         self.dj_hosts: dict[str, dict] = {}
         self._lyrics: dict[str, tuple[str | None, str | None]] = {}
         self._sound_effects: list[dict] | None = None
@@ -117,7 +123,10 @@ class Backend(GObject.Object):
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            # few, reused connections: every open socket costs time on each main-loop pass
+            # (PyGObject's asyncio bridge polls them all), and covers come from one server anyway
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit_per_host=10, keepalive_timeout=15))
         return self._session
 
     async def _run(self) -> None:
@@ -298,6 +307,8 @@ class Backend(GObject.Object):
             return None
         if (data := self._image_cache.get(url)) is not None:
             return data
+        if self._image_failed.get(url, 0) > time.monotonic():
+            return None  # failed recently; don't stall another 15 s on it
         session = await self._get_session()
         headers = {}
         if self._token and self.config.server_url and url.startswith(
@@ -310,7 +321,8 @@ class Backend(GObject.Object):
                     return None
                 data = await r.read()
         except (aiohttp.ClientError, TimeoutError) as err:
-            log.debug("image fetch failed %s: %s", url, err)
+            log.debug("image fetch failed %s: %r", url, err)
+            self._image_failed[url] = time.monotonic() + IMAGE_RETRY_AFTER
             return None
         if len(self._image_cache) > 400:
             self._image_cache.clear()
@@ -559,6 +571,8 @@ class Backend(GObject.Object):
         the library copy up fresh.
         """
         if mi is None or not self.client or not getattr(mi, "uri", None):
+            return False, None
+        if getattr(mi, "media_type", None) not in FAVORITABLE:  # sound effects, announcements…
             return False, None
         music = self.client.music
         try:

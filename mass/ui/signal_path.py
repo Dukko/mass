@@ -9,6 +9,7 @@ from gi.repository import Gtk
 
 from .common import label
 from .expressive import Sym
+from .motion import MotionBin
 
 QUALITY = {"hi_res": "Hi-res", "lossless": "Lossless", "standard": "Standard", "low": "Low quality"}
 CHANNELS = {1: "Mono", 2: "Stereo"}
@@ -201,5 +202,6 @@ class SignalPathPopover(Gtk.Popover):
         self.backend = backend
         self.add_css_class("signal-path-popover")
         self.path = SignalPath()
-        self.set_child(self.path)
-        self.connect("show", lambda *_: self.path.update(backend))
+        self.motion = MotionBin(self.path, dy=-12, scale=0.92, preset="bouncy")
+        self.set_child(self.motion)
+        self.connect("show", lambda *_: (self.path.update(backend), self.motion.play()))

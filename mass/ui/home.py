@@ -77,8 +77,7 @@ class HeroCard(Gtk.Button):
         self.where = label("", "overline")
         self.title = label("", "headline-l", max_width_chars=1, hexpand=True)
         self.artist = label("", "title-m", "on-variant", max_width_chars=1)
-        self.wave = WavySeekbar(height=24, amplitude=3, wavelength=28, line_width=4, interactive=False)
-        self.wave.set_margin_start(-10)
+        self.wave = WavySeekbar(height=24, amplitude=3, wavelength=28, line_width=4, interactive=False, pad=2)
         self.wave.set_margin_top(10)
         for w in (self.where, self.title, self.artist, self.wave):
             col.append(w)
