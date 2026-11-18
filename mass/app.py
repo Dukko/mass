@@ -17,6 +17,7 @@ from .notify import Notifier
 from .tray import Tray
 from .updater import Updater
 from .ui.nowplaying import art_url, track_info
+from music_assistant_models.enums import PlaybackState
 
 log = logging.getLogger(__name__)
 
@@ -130,8 +131,48 @@ class MassApp(Adw.Application):
         if self.config.run_in_background:
             win.set_visible(False)
             return True  # keep the window object; app.hold() keeps us alive
-        self.quit()
-        return False
+        self.request_quit()
+        return True  # request_quit decides (it may ask first)
+
+    def _local_player_playing(self):
+        """This PC's MA player, if it is playing right now (it outlives the app: systemd service)."""
+        if not self.config.endpoint_enabled or not self.backend.client:
+            return None
+        pid = self.endpoint.find_player_id(self.backend)
+        p = self.backend.get_player(pid) if pid else None
+        return p if p and p.playback_state == PlaybackState.PLAYING else None
+
+    def request_quit(self) -> None:
+        """Quit, but first ask whether music playing on this PC should keep going."""
+        p = self._local_player_playing()
+        if p is None:
+            self.quit()
+            return
+        self.window.present()
+        dlg = Adw.AlertDialog(heading="Music is playing on this PC",
+                              body=f"“{p.name}” keeps playing after Mass quits. Stop it too?")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("keep", "Keep Playing")
+        dlg.add_response("stop", "Stop & Quit")
+        dlg.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("keep")
+        dlg.set_close_response("cancel")
+
+        def answered(_d, response):
+            if response == "keep":
+                self.quit()
+            elif response == "stop":
+                async def stop_then_quit():
+                    try:
+                        await self.backend.client.players.pause(p.player_id)
+                    except Exception as err:  # noqa: BLE001
+                        log.warning("could not pause %s: %s", p.name, err)
+                    self.quit()
+
+                asyncio.ensure_future(stop_then_quit())
+
+        dlg.connect("response", answered)
+        dlg.present(self.window)
 
     def _on_status(self, _b, status, _detail) -> None:
         if status == "connected" and self.config.endpoint_enabled:
@@ -170,7 +211,7 @@ class MassApp(Adw.Application):
             if accels:
                 self.set_accels_for_action(f"app.{name}", list(accels))
 
-        add("quit", self.quit, ["<Ctrl>q"])
+        add("quit", self.request_quit, ["<Ctrl>q"])
         add("show", self.activate)
         add("preferences", self._show_prefs, ["<Ctrl>comma"])
         add("about", self._show_about)

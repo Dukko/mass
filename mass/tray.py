@@ -305,5 +305,5 @@ class Tray:
 
     def _clicked(self, i: int) -> None:
         b = self.backend
-        {3: b.play_pause, 4: b.next, 5: b.previous, 7: self.toggle_window, 8: self.app.quit}.get(i, lambda: None)()
+        {3: b.play_pause, 4: b.next, 5: b.previous, 7: self.toggle_window, 8: self.app.request_quit}.get(i, lambda: None)()
         self._changed()
