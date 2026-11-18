@@ -10,6 +10,7 @@ from gi.repository import Adw, GLib, Gtk
 from .. import APP_ID, APP_NAME
 from ..host import HOST_CONFIG, launch_cmd
 from ..discovery import discover
+from .. import firewall
 
 AUTOSTART = HOST_CONFIG / "autostart" / f"{APP_ID}.desktop"
 
@@ -159,6 +160,18 @@ class PreferencesDialog(Adw.PreferencesDialog):
             g.add(r)
         lp.add(g)
 
+        # Sendspin is server-initiated, so a default-deny firewall hides the player silently
+        self.fw = Adw.PreferencesGroup(title="Firewall", visible=False)
+        self.fw_row = Adw.ActionRow(title="Your firewall is blocking the local player", subtitle_selectable=True)
+        self.fw_row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic", css_classes=["warning"]))
+        copy = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy command",
+                          valign=Gtk.Align.CENTER, css_classes=["flat"])
+        copy.connect("clicked", self._copy_fw_cmd)
+        self.fw_row.add_suffix(copy)
+        self.fw.add(self.fw_row)
+        lp.add(self.fw)
+        self._fw_cmd = ""
+
         def apply(*_):
             cfg.endpoint_enabled = en.get_active()
             cfg.endpoint_name = name.get_text().strip() or cfg.endpoint_name
@@ -171,8 +184,11 @@ class PreferencesDialog(Adw.PreferencesDialog):
         hw.connect("notify::active", apply)
         name.connect("apply", apply)
         dev.connect("apply", apply)
-        app.endpoint.connect("state-changed", lambda *_: self._ep_status())
-        self._ep_status()
+        handlers = [(app.endpoint, app.endpoint.connect("state-changed", lambda *_: self._ep_changed())),
+                    (app.backend, app.backend.connect("players-changed", lambda *_: self._ep_status())),
+                    (app.backend, app.backend.connect("player-updated", lambda *_: self._ep_status()))]
+        self.connect("closed", lambda *_: [obj.disconnect(h) for obj, h in handlers])
+        self._ep_changed()
 
         # ------------------------------------------------ desktop integration
         dp = Adw.PreferencesPage(title="Desktop", icon_name="computer-symbolic")
@@ -212,7 +228,33 @@ class PreferencesDialog(Adw.PreferencesDialog):
         ep = self.app.endpoint
         how = {"systemd": "systemd user service", "child": "managed by the app"}.get(ep.mode, "")
         txt = ep.state.capitalize() + (f" ({how})" if how else "") + (f": {ep.detail}" if ep.detail else "")
+        if ep.state == "running" and self.app.backend.players():
+            pid = ep.find_player_id(self.app.backend)
+            p = self.app.backend.get_player(pid) if pid else None
+            txt += (" · visible in Music Assistant" if p and p.available
+                    else " · waiting for Music Assistant to connect")
         self.ep_status.set_subtitle(GLib.markup_escape_text(txt))
+
+    def _ep_changed(self) -> None:
+        self._ep_status()
+        if self.app.endpoint.state != "running":
+            self.fw.set_visible(False)
+            return
+
+        async def go():
+            blocked = await asyncio.to_thread(firewall.check)
+            self.fw.set_visible(blocked is not None)
+            if blocked:
+                name, self._fw_cmd = blocked
+                self.fw_row.set_subtitle(GLib.markup_escape_text(
+                    f"Music Assistant connects to this PC on port {firewall.SENDSPIN_PORT}, which {name} drops. "
+                    f"Open it to your local network with:\n{self._fw_cmd}"))
+
+        asyncio.ensure_future(go())
+
+    def _copy_fw_cmd(self, *_):
+        self.get_clipboard().set(self._fw_cmd)
+        self.add_toast(Adw.Toast(title="Command copied — run it in a terminal"))
 
     def _signout(self, *_):
         async def go():

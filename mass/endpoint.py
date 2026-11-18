@@ -100,7 +100,7 @@ class Endpoint(GObject.Object):
     def _install_flatpak_unit(self) -> None:
         """Flatpak: install a host user unit that runs sendspin from this Flatpak."""
         unit = HOST_CONFIG / "systemd" / "user" / UNIT
-        text = UNIT_TEMPLATE.format(env=ENV_FILE, cmd=f"flatpak run --command=sendspin {APP_ID}")
+        text = UNIT_TEMPLATE.format(env=ENV_FILE, cmd=f"flatpak run --die-with-parent --command=sendspin {APP_ID}")
         try:
             if unit.exists() and unit.read_text() == text:
                 return
