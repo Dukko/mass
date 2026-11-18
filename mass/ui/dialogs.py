@@ -208,6 +208,32 @@ class PreferencesDialog(Adw.PreferencesDialog):
             d.add(r)
         dp.add(d)
 
+        up = app.updater
+        if up.enabled:
+            ug = Adw.PreferencesGroup(title="Updates",
+                                      description="New versions come from github.com/Dukko/mass, signed and "
+                                                  "checked every few hours while Mass is running.")
+            au = Adw.SwitchRow(title="Download updates automatically",
+                               subtitle="You still choose when to restart", active=cfg.auto_update)
+
+            def set_auto(r, _p):
+                cfg.auto_update = r.get_active()
+                cfg.save()
+                if cfg.auto_update and up.state == "available":
+                    up.install()
+
+            au.connect("notify::active", set_auto)
+            self.up_row = Adw.ActionRow(title="Mass")
+            self.up_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+            self.up_btn.connect("clicked", self._update_clicked)
+            self.up_row.add_suffix(self.up_btn)
+            ug.add(au)
+            ug.add(self.up_row)
+            dp.add(ug)
+            h = up.connect("changed", lambda *_: self._update_status())
+            self.connect("closed", lambda *_: up.disconnect(h))
+            self._update_status()
+
         def set_attr(attr):
             def cb(r, _p):
                 setattr(cfg, attr, r.get_active())
@@ -251,6 +277,27 @@ class PreferencesDialog(Adw.PreferencesDialog):
                     f"Open it to your local network with:\n{self._fw_cmd}"))
 
         asyncio.ensure_future(go())
+
+    def _update_status(self) -> None:
+        up = self.app.updater
+        self.up_row.set_subtitle(GLib.markup_escape_text(up.describe()))
+        label, style = {"ready": ("Restart", "suggested-action"), "available": ("Update", "suggested-action"),
+                        "checking": ("Checking…", ""), "downloading": ("Downloading…", "")}.get(
+            up.state, ("Check now", ""))
+        self.up_btn.set_label(label)
+        self.up_btn.set_sensitive(up.state not in ("checking", "downloading"))
+        for c in ("suggested-action",):
+            (self.up_btn.add_css_class if c == style else self.up_btn.remove_css_class)(c)
+
+    def _update_clicked(self, _b) -> None:
+        up = self.app.updater
+        if up.state == "ready":
+            self.close()
+            self.app.restart_for_update()
+        elif up.state == "available":
+            up.install()
+        else:
+            up.check()
 
     def _copy_fw_cmd(self, *_):
         self.get_clipboard().set(self._fw_cmd)

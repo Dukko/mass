@@ -40,6 +40,8 @@ class Config:
     notifications: bool = True
     mpris: bool = True
     tray: bool = True
+    # flatpak: download updates in the background (restart still asks)
+    auto_update: bool = True
     # now playing
     show_lyrics: bool = False
     wavy_progress: bool = True

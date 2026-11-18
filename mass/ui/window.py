@@ -94,6 +94,9 @@ class MainWindow(Adw.ApplicationWindow):
         root = Adw.ToolbarView(content=self.stack, top_bar_style=Adw.ToolbarStyle.FLAT)
         root.add_top_bar(header)
         root.add_top_bar(self.banner)
+        self.update_banner = Adw.Banner(button_label="Restart")
+        self.update_banner.connect("button-clicked", self._on_update_banner)
+        root.add_top_bar(self.update_banner)
         root.set_extend_content_to_top_edge(True)  # pages draw under the transparent header
         self.nav = Adw.NavigationView()
         self.nav.add(Adw.NavigationPage(child=root, title=APP_NAME, tag="root"))
@@ -216,6 +219,28 @@ class MainWindow(Adw.ApplicationWindow):
         self.banner.set_title(GLib.markup_escape_text(
             "Connecting to Music Assistant…" if status == Status.CONNECTING else f"Disconnected: {detail}"))
         self.banner.set_revealed(True)
+
+    def show_update(self, up) -> None:
+        if up.state == "ready":
+            self.update_banner.set_title("A new version of Mass is installed")
+            self.update_banner.set_button_label("Restart")
+        elif up.state == "available" and not self.app.config.auto_update:
+            self.update_banner.set_title("A Mass update is available")
+            self.update_banner.set_button_label("Update")
+        elif up.state == "downloading" and self.update_banner.get_revealed():
+            self.update_banner.set_title("Downloading update…")
+            self.update_banner.set_button_label(None)
+            return
+        else:
+            self.update_banner.set_revealed(False)
+            return
+        self.update_banner.set_revealed(True)
+
+    def _on_update_banner(self, _b) -> None:
+        if self.app.updater.state == "ready":
+            self.app.restart_for_update()
+        else:
+            self.app.updater.install()
 
     def show_login(self) -> None:
         if self._login_open:

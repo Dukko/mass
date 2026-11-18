@@ -15,6 +15,7 @@ from .mpris import MprisServer
 from .theme import ThemeManager
 from .notify import Notifier
 from .tray import Tray
+from .updater import Updater
 from .ui.nowplaying import art_url, track_info
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,9 @@ class MassApp(Adw.Application):
         self.mpris = MprisServer(self, self.backend)
         self.notifier = Notifier(self._on_notify_action)
         self.tray = Tray(self, self.backend)
+        self.updater = Updater(self.config)
+        self.updater.connect("changed", self._on_update_state)
+        self._update_notified = ""
 
         from .ui.window import MainWindow
 
@@ -60,6 +64,7 @@ class MassApp(Adw.Application):
         if self.config.endpoint_enabled:
             self.endpoint.apply()
         self.backend.start()
+        self.updater.start()
         # clean shutdown (stop the child endpoint, release MPRIS) on Ctrl+C / kill
         for sig in (2, 15):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda *_: (self.quit(), False)[1])
@@ -128,6 +133,17 @@ class MassApp(Adw.Application):
             # first run: select the local player if nothing is selected
             if not self.config.active_player_id:
                 GLib.timeout_add_seconds(2, self._select_local)
+
+    def _on_update_state(self, up) -> None:
+        self.window.show_update(up)
+        if up.state == "ready" and self._update_notified != up.installed:
+            self._update_notified = up.installed
+            self.notifier.message("Mass update ready", "Restart Mass to use the new version.",
+                                  [("restart", "Restart now"), ("default", "Later")],
+                                  lambda key: key == "restart" and self.restart_for_update())
+
+    def restart_for_update(self) -> None:
+        self.updater.restart(self, show_window=self.window.get_visible())
 
     def _on_notify_action(self, key: str) -> None:
         {"next": self.backend.next, "previous": self.backend.previous}.get(key, self.activate)()

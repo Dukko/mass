@@ -26,17 +26,9 @@ flatpak install --user https://dukko.github.io/mass/mass.flatpakref
 ```
 
 This installs from a signed Flatpak repo on GitHub Pages that CI rebuilds on every push to `main`,
-so `flatpak update` (or your software center) picks up new versions. For hands-off updates, add a
-user timer:
-
-```sh
-mkdir -p ~/.config/systemd/user
-printf '[Service]\nType=oneshot\nExecStart=/usr/bin/flatpak update --user -y --noninteractive io.github.mass_matugen.Mass\n' \
-  > ~/.config/systemd/user/mass-update.service
-printf '[Timer]\nOnStartupSec=5min\nOnUnitActiveSec=2h\nPersistent=true\n[Install]\nWantedBy=timers.target\n' \
-  > ~/.config/systemd/user/mass-update.timer
-systemctl --user enable --now mass-update.timer
-```
+so `flatpak update` (or your software center) picks up new versions. Mass also updates itself: while
+it's running it checks the repo every few hours, downloads new versions in the background, and asks
+you to restart (banner + notification). Toggle this in Preferences → Desktop → Updates.
 
 A single-file `mass.flatpak` bundle is also attached to each [release](https://github.com/Dukko/mass/releases)
 (no automatic updates).

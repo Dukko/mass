@@ -25,6 +25,7 @@ class Notifier:
         self.on_action = on_action  # callable(action_key)
         self._bus: Gio.DBusConnection | None = None
         self._last_id = 0
+        self._other: dict[int, object] = {}  # notification id -> callback(action_key)
         try:
             self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
             self._bus.signal_subscribe(
@@ -37,6 +38,29 @@ class Notifier:
         nid, key = params.unpack()
         if nid == self._last_id:
             self.on_action(key)
+        elif cb := self._other.pop(nid, None):
+            cb(key)
+
+    def message(self, title: str, body: str, actions: list[tuple[str, str]], on_action) -> None:
+        """A persistent app notification (not the track one), e.g. "update ready"."""
+        if not self._bus:
+            return
+        hints = {"desktop-entry": GLib.Variant("s", APP_ID), "urgency": GLib.Variant("y", 1)}
+        flat = [x for pair in actions for x in pair]
+
+        def sent(conn, res):
+            try:
+                (nid,) = conn.call_finish(res).unpack()
+                self._other[nid] = on_action
+            except GLib.Error as err:
+                log.debug("notify failed: %s", err.message)
+
+        self._bus.call(
+            "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications", "Notify",
+            GLib.Variant("(susssasa{sv}i)", (APP_NAME, 0, APP_ID, title, GLib.markup_escape_text(body),
+                                             flat, hints, 0)),
+            GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, -1, None, sent)
 
     def show(self, title: str, body: str, cover: bytes | None) -> None:
         if not self._bus:
