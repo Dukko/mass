@@ -5,7 +5,7 @@ from __future__ import annotations
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from .common import ArtImage, ItemObject, artists_str, fmt_time, label
-from .dj import DJ_SHAPE, dj_segment, host_name
+from .dj import AI_ICON, DJ_SHAPE, dj_icon, dj_segment, host_name
 from .expressive import ShapeArt, sym_button
 from .motion import after_motion
 
@@ -69,10 +69,14 @@ class QueuePage(Gtk.Box):
         q = self.backend.active_queue
         if not q or q.queue_id != qid:
             return
-        if q.queue_id != self._qid:
-            self.reload()
-        elif q.current_index != self._current_index:
-            self._highlight(q.current_index)
+        cur = q.current_item.queue_item_id if q.current_item else None
+        idx = q.current_index
+        stale = (cur is not None and self._ids is not None and idx is not None
+                 and 0 <= idx < len(self._ids) and self._ids[idx] != cur)
+        if q.queue_id != self._qid or stale:
+            self.reload()  # the list we show is out of date (or it's another queue): fetch it again
+        elif idx != self._current_index:
+            self._highlight(idx)
 
     def reload(self) -> None:
         if not self.get_mapped() and not self.compact:
@@ -128,7 +132,7 @@ class QueuePage(Gtk.Box):
         box = Gtk.Box(spacing=14)
         box.add_css_class("qrow")  # styled here, not on GTK's row: touching that from Python breaks it
         art = ArtImage(self.backend, 48)
-        dj_art = ShapeArt(48, DJ_SHAPE, "microphone-sensitivity-high-symbolic")
+        dj_art = ShapeArt(48, DJ_SHAPE, "sym:" + AI_ICON)
         box.append(art)
         box.append(dj_art)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=2)
@@ -161,6 +165,7 @@ class QueuePage(Gtk.Box):
         art.set_visible(not seg)
         dj_art.set_visible(bool(seg))
         if seg:
+            dj_art.set_icon("sym:" + dj_icon(self.backend, seg["host_id"]))
             title.set_label(f"{seg['name']} · {host_name(self.backend, seg['host_id'])}")
             sub.set_label(seg["text"] or "Preparing…")
             sub.set_wrap(True)

@@ -189,11 +189,15 @@ def after_motion(widget: Gtk.Widget, fn) -> None:
         if isinstance(w, MotionBin) and w._anim.get_state() == Adw.AnimationState.PLAYING:
             anim = w._anim
 
-            def done(*_):
+            # "notify::state", not "done": play()/hold() reset() a running spring, which goes
+            # back to IDLE without ever emitting "done", and fn would be lost for good
+            def changed(*_):
+                if anim.get_state() == Adw.AnimationState.PLAYING:
+                    return
                 anim.disconnect(handler)
                 after_motion(widget, fn)  # an outer one may still be running
 
-            handler = anim.connect("done", done)
+            handler = anim.connect("notify::state", changed)
             return
         w = w.get_parent()
     fn()
