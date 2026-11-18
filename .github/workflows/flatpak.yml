@@ -27,19 +27,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install flatpak-builder
-        # Ubuntu mirrors sometimes stall: give each attempt 3 minutes, retry up to 3 times
+        # The runner's default Ubuntu mirror sometimes crawls. Skip recommended extras (they drag
+        # in ffmpeg + Mesa, ~100 MB), give each attempt 3 minutes, and switch mirror on retry.
         timeout-minutes: 12
         run: |
           APT=(-q -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
-          for try in 1 2 3; do
+          MIRRORS=("" "http://azure.archive.ubuntu.com/ubuntu/" "http://archive.ubuntu.com/ubuntu/")
+          for try in 0 1 2; do
+            if [ -n "${MIRRORS[$try]}" ]; then
+              echo "::warning::apt attempt $try stalled or failed; switching to ${MIRRORS[$try]}"
+              sudo dpkg --configure -a || true  # finish anything a killed attempt left half-done
+              echo "${MIRRORS[$try]}" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            fi
             if timeout 180 sudo apt-get "${APT[@]}" update &&
-               timeout 180 sudo apt-get "${APT[@]}" install -y flatpak flatpak-builder; then
+               timeout 180 sudo apt-get "${APT[@]}" install -y --no-install-recommends flatpak flatpak-builder
+            then
               break
             fi
-            [ "$try" = 3 ] && exit 1
-            echo "::warning::apt attempt $try stalled or failed, retrying"
-            sudo dpkg --configure -a || true  # finish anything a killed attempt left half-done
-            sleep 10
+            [ "$try" = 2 ] && exit 1
           done
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
