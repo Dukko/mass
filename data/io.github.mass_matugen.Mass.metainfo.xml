@@ -58,6 +58,18 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.0.0" date="2026-11-18">
+      <description>
+        <p>The first stable release.</p>
+        <ul>
+          <li>Players is now a full page in the navigation rail</li>
+          <li>AI DJ hosts get a sparkle icon, and each host can have its own icon</li>
+          <li>Fixed cover art and DJ badges showing glitches after resizing the window</li>
+          <li>Fixed Up next highlighting the wrong track</li>
+          <li>Tray menu icons now show in every tray</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-17"/>
   </releases>
 </component>
