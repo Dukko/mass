@@ -10,9 +10,12 @@ from .expressive import ShapeArt, sym_button
 
 
 class QueuePage(Gtk.Box):
-    def __init__(self, backend) -> None:
+    """compact=True: just the list (Now Playing's Up next tab), kept scrolled to the current track."""
+
+    def __init__(self, backend, compact: bool = False) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.backend = backend
+        self.compact = compact
         self._pending = False
         self._qid: str | None = None
         self._ids: list[str] | None = None
@@ -27,13 +30,15 @@ class QueuePage(Gtk.Box):
         clear = sym_button("clear_all", "Clear queue", ("m3", "icon", "large", "tonal"), cb=backend.clear_queue)
         clear.set_valign(Gtk.Align.END)
         head.append(clear)
-        self.append(head)
+        if not compact:
+            self.append(head)
 
         self.stack = Gtk.Stack(vexpand=True)
         self.stack.add_named(Adw.StatusPage(icon_name="view-list-symbolic", title="Queue is empty",
                                             description="Play something from your library or search."), "empty")
         self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        clamp = Adw.Clamp(maximum_size=900, margin_top=8, margin_bottom=120, margin_start=20, margin_end=20)
+        clamp = Adw.Clamp(maximum_size=900, margin_top=8, margin_bottom=16 if compact else 120,
+                          margin_start=12 if compact else 20, margin_end=12 if compact else 20)
         self.list = m3_list()
         self.list.connect("row-activated", lambda _l, row: self.backend.play_index(row.item.queue_item_id))
         clamp.set_child(self.list)
@@ -106,7 +111,8 @@ class QueuePage(Gtk.Box):
             self.list.append(self._row(it))
         self._current_index = None
         self._highlight(q.current_index)
-        GLib.idle_add(lambda: (vadj.set_value(scroll), False)[1])
+        if not self.compact:  # compact mode scrolls to the current track instead
+            GLib.idle_add(lambda: (vadj.set_value(scroll), False)[1])
 
     def _row(self, it) -> Gtk.ListBoxRow:
         mi = it.media_item
@@ -145,3 +151,10 @@ class QueuePage(Gtk.Box):
         self._current_index = index
         if index is not None and (row := self.list.get_row_at_index(index)):
             row.add_css_class("current")
+            if self.compact:
+                GLib.idle_add(lambda: (self._scroll_to(row), False)[1])
+
+    def _scroll_to(self, row: Gtk.ListBoxRow) -> None:
+        ok, rect = row.compute_bounds(self.list)
+        if ok:
+            self.scroller.get_vadjustment().set_value(max(0.0, rect.get_y() - 8))

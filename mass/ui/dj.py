@@ -118,6 +118,61 @@ class DJCaption(Gtk.Box):
         self.set_visible(True)
 
 
+class DJTranscript(Gtk.ListBox):
+    """Recent and upcoming DJ breaks of the active queue, with what the host says."""
+
+    def __init__(self, backend) -> None:
+        super().__init__(selection_mode=Gtk.SelectionMode.NONE)
+        self.add_css_class("m3-list")
+        self.backend = backend
+
+    def load(self) -> None:
+        q = self.backend.active_queue
+        if not q or not self.backend.client:
+            self._fill([], None)
+            return
+
+        async def go():
+            items = await self.backend.client.player_queues.get_queue_items(q.queue_id, limit=500)
+            self._fill(items, q.current_index)
+
+        self.backend.run(go())
+
+    def _fill(self, items, current_index) -> None:
+        while r := self.get_row_at_index(0):
+            self.remove(r)
+        segs = []
+        for i, it in enumerate(items):
+            if (seg := dj_segment(it)) and seg["text"]:
+                segs.append((i, seg))
+        # most recent first: the ones at/before the current position, then upcoming
+        cur = current_index if current_index is not None else len(items)
+        past = [s for s in segs if s[0] <= cur][-6:][::-1]
+        upcoming = [s for s in segs if s[0] > cur][:2]
+        if not past and not upcoming:
+            row = Gtk.ListBoxRow(activatable=False)
+            row.set_child(label("No DJ breaks in this queue yet.", "body-m", "on-variant", margin_start=16,
+                                margin_top=16, margin_bottom=16))
+            self.append(row)
+            return
+        for idx, seg in upcoming[::-1] + past:
+            row = Gtk.ListBoxRow(activatable=False)
+            box = Gtk.Box(spacing=14, margin_start=14, margin_end=14, margin_top=12, margin_bottom=12)
+            box.append(Sym("mic", 22, fill=idx == cur))
+            t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+            when = "ON AIR" if idx == cur else ("UP NEXT" if idx > cur else "EARLIER")
+            t.append(label(f"{when} · {seg['name'].upper()} · {host_name(self.backend, seg['host_id']).upper()}",
+                           "overline", "on-variant"))
+            txt = label(seg["text"], "body-m", ellipsize=False, wrap=True)
+            txt.set_wrap_mode(2)
+            t.append(txt)
+            box.append(t)
+            row.set_child(box)
+            if idx == cur:
+                row.add_css_class("current")
+            self.append(row)
+
+
 class AIRadioView(Gtk.ScrolledWindow):
     """Stations, hosts, and the live DJ transcript for the active queue."""
 
@@ -150,8 +205,7 @@ class AIRadioView(Gtk.ScrolledWindow):
 
         # -------- live transcript
         col.append(label("Recent DJ breaks", "section-title", margin_top=8))
-        self.transcript = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        self.transcript.add_css_class("m3-list")
+        self.transcript = DJTranscript(backend)
         col.append(self.transcript)
 
         # -------- stations
@@ -169,7 +223,7 @@ class AIRadioView(Gtk.ScrolledWindow):
         for sig in ("ai-changed", "active-player-changed"):
             backend.connect(sig, lambda *_: self.get_mapped() and self.reload())
         backend.connect("queue-updated", lambda _b, qid: self.get_mapped() and self.backend.is_relevant(qid)
-                        and self._load_transcript())
+                        and self.transcript.load())
         self.connect("map", lambda *_: self.reload())
 
     # ------------------------------------------------------------------ data
@@ -178,7 +232,7 @@ class AIRadioView(Gtk.ScrolledWindow):
         if not self.backend.ai_available:
             return
         self._hero()
-        self._load_transcript()
+        self.transcript.load()
 
         async def go():
             stations = await self.backend.ai("stations/list")
@@ -196,52 +250,6 @@ class AIRadioView(Gtk.ScrolledWindow):
         self.hero_sub.set_label(_excerpt(host.get("instructions", ""), 200) if host else
                                 "Pick a host to talk between your songs: transitions, artist facts, news.")
         self.hero_art.set_spinning(0.4 if host else 0.0)
-
-    def _load_transcript(self) -> None:
-        q = self.backend.active_queue
-        if not q or not self.backend.client:
-            self._fill_transcript([], None)
-            return
-
-        async def go():
-            items = await self.backend.client.player_queues.get_queue_items(q.queue_id, limit=500)
-            self._fill_transcript(items, q.current_index)
-
-        self.backend.run(go())
-
-    def _fill_transcript(self, items, current_index) -> None:
-        while r := self.transcript.get_row_at_index(0):
-            self.transcript.remove(r)
-        segs = []
-        for i, it in enumerate(items):
-            if (seg := dj_segment(it)) and seg["text"]:
-                segs.append((i, seg))
-        # most recent first: the ones at/before the current position, then upcoming
-        cur = current_index if current_index is not None else len(items)
-        past = [s for s in segs if s[0] <= cur][-6:][::-1]
-        upcoming = [s for s in segs if s[0] > cur][:2]
-        if not past and not upcoming:
-            row = Gtk.ListBoxRow(activatable=False)
-            row.set_child(label("No DJ breaks in this queue yet.", "body-m", "on-variant", margin_start=16,
-                                margin_top=16, margin_bottom=16))
-            self.transcript.append(row)
-            return
-        for idx, seg in upcoming[::-1] + past:
-            row = Gtk.ListBoxRow(activatable=False)
-            box = Gtk.Box(spacing=14, margin_start=14, margin_end=14, margin_top=12, margin_bottom=12)
-            box.append(Sym("mic", 22, fill=idx == cur))
-            t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
-            when = "ON AIR" if idx == cur else ("UP NEXT" if idx > cur else "EARLIER")
-            t.append(label(f"{when} · {seg['name'].upper()} · {host_name(self.backend, seg['host_id']).upper()}",
-                           "overline", "on-variant"))
-            txt = label(seg["text"], "body-m", ellipsize=False, wrap=True)
-            txt.set_wrap_mode(2)
-            t.append(txt)
-            box.append(t)
-            row.set_child(box)
-            if idx == cur:
-                row.add_css_class("current")
-            self.transcript.append(row)
 
     def _fill_stations(self, stations) -> None:
         self.stations.remove_all()

@@ -491,7 +491,8 @@ SYMBOL_FALLBACKS = {
     "lyrics": "format-justify-left-symbolic",
     "autoplay": "media-playlist-repeat-symbolic",
     "join": "media-playlist-consecutive-symbolic",
-    "more_vert": "view-more-symbolic",
+    "bedtime": "weather-clear-night-symbolic",
+    "info": "dialog-information-symbolic",
 }
 
 

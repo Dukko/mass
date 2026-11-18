@@ -548,5 +548,34 @@ class Backend(GObject.Object):
         self.run(go())
 
     def toggle_favorite_current(self) -> None:
+        """Fallback for media we can't resolve (external sources): add only."""
         if (p := self.active_player) and self.client:
             self.run(self.client.players.add_currently_playing_to_favorites(p.player_id))
+
+    async def favorite_state(self, mi) -> tuple[bool, str | None]:
+        """(is favorite, library item id) for a queue media item.
+
+        Queue items carry a snapshot, often of the provider item (not the library one), so look
+        the library copy up fresh.
+        """
+        if mi is None or not self.client or not getattr(mi, "uri", None):
+            return False, None
+        music = self.client.music
+        try:
+            if getattr(mi, "provider", None) == "library":
+                lib = await music.get_item_by_uri(mi.uri)
+            else:
+                lib = await music.get_library_item_by_prov_id(mi.media_type, mi.item_id, mi.provider)
+        except Exception as err:  # noqa: BLE001 - not in the library / unknown provider
+            log.debug("favorite lookup failed: %s", err)
+            return False, None
+        if lib is None:
+            return False, None
+        return bool(getattr(lib, "favorite", False)), str(lib.item_id)
+
+    async def set_favorite(self, mi, on: bool, library_id: str | None) -> None:
+        music = self.client.music
+        if on:
+            await music.add_item_to_favorites(mi.uri)  # adds it to the library too if needed
+        elif library_id:
+            await music.remove_item_from_favorites(mi.media_type, library_id)

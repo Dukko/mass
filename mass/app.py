@@ -23,7 +23,11 @@ log = logging.getLogger(__name__)
 
 class MassApp(Adw.Application):
     def __init__(self) -> None:
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        # MASS_SCREENSHOT debug runs: separate instance, no services (MPRIS, tray, local player)
+        self._shot = bool(GLib.getenv("MASS_SCREENSHOT"))
+        flags = Gio.ApplicationFlags.HANDLES_COMMAND_LINE
+        super().__init__(application_id=APP_ID,
+                         flags=flags | Gio.ApplicationFlags.NON_UNIQUE if self._shot else flags)
         self.add_main_option("background", ord("b"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
                              "Start without showing the window", None)
         self.config = Config.load()
@@ -57,14 +61,15 @@ class MassApp(Adw.Application):
         self.backend.connect("active-player-changed", lambda *_: self._maybe_notify(force_silent=True))
         self.backend.connect("status-changed", self._on_status)
 
-        if self.config.mpris:
+        if self.config.mpris and not self._shot:
             self.mpris.start()
-        if self.config.tray:
+        if self.config.tray and not self._shot:
             self.tray.start()
-        if self.config.endpoint_enabled:
+        if self.config.endpoint_enabled and not self._shot:
             self.endpoint.apply()
         self.backend.start()
-        self.updater.start()
+        if not self._shot:
+            self.updater.start()
         # clean shutdown (stop the child endpoint, release MPRIS) on Ctrl+C / kill
         for sig in (2, 15):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda *_: (self.quit(), False)[1])

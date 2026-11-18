@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 from gi.repository import GLib, Gtk
 from music_assistant_models.enums import PlaybackState, RepeatMode
 
 from .common import ArtImage, artists_str, fmt_time, label
-from .dj import DJ_SHAPE, DJCaption, DJChip, dj_segment, host_name
+from .dj import DJ_SHAPE, DJCaption, DJChip, DJTranscript, dj_segment, host_name
 from .expressive import Sym, WavySeekbar, sym_button
 from .lyrics import LyricsView
-from .np_options import NowPlayingOptions
+from .np_options import NowPlayingOptions, audio_quality
+from .queue import QueuePage
+
+log = logging.getLogger(__name__)
 
 ART_PLAYING_SHAPE = "cookie12"
 ART_PAUSED_SHAPE = "square"
@@ -64,76 +69,136 @@ def _set_class(w: Gtk.Widget, cls: str, on: bool) -> None:
     (w.add_css_class if on else w.remove_css_class)(cls)
 
 
+CARD_MIN, PANEL_MIN = 440, 660
+ART_MIN, ART_MAX = 220, 520
+
+TABS = (("lyrics", "Lyrics"), ("queue", "Up next"), ("dj", "AI DJ"), ("about", "About"))
+
+
+def current_media_item(backend):
+    q = backend.active_queue
+    return q.current_item.media_item if q and q.current_item else None
+
+
+class TrackAbout(Gtk.ScrolledWindow):
+    """Key/value facts about the current track (About tab)."""
+
+    FIELDS = ("Title", "Artist", "Album", "Year", "Length", "Format", "Source", "Player")
+
+    def __init__(self) -> None:
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        grid = Gtk.Grid(column_spacing=24, row_spacing=14, margin_start=28, margin_end=28, margin_top=20,
+                        margin_bottom=20)
+        self.set_child(grid)
+        self.values: dict[str, Gtk.Label] = {}
+        for i, name in enumerate(self.FIELDS):
+            grid.attach(label(name, "label-l", "on-variant", ellipsize=False), 0, i, 1, 1)
+            val = label("", "body-l", ellipsize=False, wrap=True, hexpand=True, selectable=True)
+            val.set_wrap_mode(2)
+            grid.attach(val, 1, i, 1, 1)
+            self.values[name] = val
+
+    def refresh(self, backend) -> None:
+        title, artist, album, duration, _src = track_info(backend)
+        mi = current_media_item(backend)
+        alb = getattr(mi, "album", None)
+        q, p = backend.active_queue, backend.active_player
+        sd = getattr(q.current_item, "streamdetails", None) if q and q.current_item else None
+        qual = audio_quality(backend)
+        prov = getattr(sd, "provider", None) or getattr(mi, "provider", None) or ""
+        facts = {
+            "Title": title, "Artist": artist, "Album": album, "Year": str(getattr(alb, "year", "") or ""),
+            "Length": fmt_time(duration) if duration else "", "Format": qual[1] if qual else "",
+            "Source": str(prov).split("--")[0].replace("_", " ").title(), "Player": p.name if p else "",
+        }
+        for name, val in facts.items():
+            lbl = self.values[name]
+            lbl.set_label(val or "—")
+
+
 class NowPlayingPage(Gtk.Box):
+    """Option C: a player card (art, track, transport, volume) beside a tabbed panel
+    (Lyrics · Up next · AI DJ · About) with the queue option chips along its foot."""
+
     def __init__(self, backend, theme, open_players, open_queue) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.backend, self.theme = backend, theme
         self.add_css_class("np-page")
+        self._narrow = False
+        self._fit_for = (0, 0)
+        self._fav_uri: str | None = None
+        self._fav_on = False
+        self._fav_lib: str | None = None
 
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self.append(scroller)
-        self.layout = Gtk.Box(spacing=48, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
-                              margin_top=64, margin_bottom=120, margin_start=32, margin_end=32)
+        self.layout = Gtk.Box(spacing=16, margin_top=52, margin_bottom=16, margin_start=16, margin_end=16)
         scroller.set_child(self.layout)
 
-        self.art = ArtImage(backend, 400, shape=ART_PAUSED_SHAPE, fetch_size=0, keep_stale=True)
-        self.lyrics = LyricsView(lambda t: backend.seek(t))
-        self.lyrics.set_size(440, 420)
-        self.visual = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=250,
-                                valign=Gtk.Align.CENTER, interpolate_size=True, vhomogeneous=False,
-                                hhomogeneous=False)
-        self.visual.add_named(self.art, "art")
-        self.visual.add_named(self.lyrics, "lyrics")
-        self.layout.append(self.visual)
-        self._lyrics_key: str | None = None
+        # ============================================================ player card
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, width_request=440)
+        card.add_css_class("np-card")
+        self.card = card
+        self.layout.append(card)
 
-        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER,
-                      width_request=380)
-        self.col = col
-        self.layout.append(col)
+        self.seek = WavySeekbar(height=36, amplitude=4.0, wavelength=34, line_width=5)
+        self.seek.connect("seek", self._on_seek)
+        self.options = NowPlayingOptions(backend, self, self.seek.set_wavy)
 
-        # player chip
+        head = Gtk.Box(spacing=8)
         chip = Gtk.Button(halign=Gtk.Align.START, tooltip_text="Choose player")
         chip.add_css_class("player-chip")
         cb = Gtk.Box(spacing=8)
         cb.append(Sym("speaker", 20, fill=True))
-        self.player_label = label("No player", max_width_chars=28)
+        self.player_label = label("No player", max_width_chars=24)
         cb.append(self.player_label)
         cb.append(Sym("expand_more", 20))
         chip.set_child(cb)
         chip.connect("clicked", lambda *_: open_players(chip))
         self.chip = chip
-        chips = Gtk.Box(spacing=8)
-        chips.append(chip)
-        self.dj_chip = DJChip(backend)
-        chips.append(self.dj_chip)
-        col.append(chips)
+        head.append(chip)
+        head.append(Gtk.Box(hexpand=True))
+        head.append(self.options.badge)
+        card.append(head)
+        card.append(Gtk.Box(vexpand=True))  # centre the rest below the header in tall windows
 
-        col.append(Gtk.Box(height_request=12))
-        self.title = label("", "np-title", ellipsize=False, wrap=True, lines=3)
+        self.art = ArtImage(backend, 392, shape=ART_PAUSED_SHAPE, fetch_size=0, keep_stale=True)
+        self.art.set_halign(Gtk.Align.CENTER)
+        self.art.set_margin_top(4)
+        card.append(self.art)
+
+        trow = Gtk.Box(spacing=12, margin_top=4)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+        self.title = label("", "np-title", ellipsize=False, wrap=True, lines=2)
         self.title.set_wrap_mode(2)  # word-char
+        self.title.set_ellipsize(3)
         self.artist = label("", "np-artist")
         self.album = label("", "np-album")
         for w in (self.title, self.artist, self.album):
-            col.append(w)
-        self.caption = DJCaption()
-        self.caption.set_margin_top(12)
-        col.append(self.caption)
+            titles.append(w)
+        trow.append(titles)
+        self.fav = sym_button("favorite", "Add to favorites", ("m3", "icon", "large", "toggle", "np-fav"),
+                              cb=self._favorite)
+        self.fav.set_valign(Gtk.Align.START)
+        trow.append(self.fav)
+        card.append(trow)
 
-        col.append(Gtk.Box(height_request=12))
-        self.seek = WavySeekbar(height=40, amplitude=4.5, wavelength=38, line_width=5)
-        self.seek.connect("seek", self._on_seek)
-        col.append(self.seek)
-        times = Gtk.Box(margin_start=10, margin_end=10)
+        self.caption = DJCaption()
+        card.append(self.caption)
+
+        seekbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        seekbox.append(self.seek)
+        times = Gtk.Box(margin_start=8, margin_end=8)
         self.elapsed = label("", "label-l", "on-variant", "numeric", hexpand=True)
         self.duration = label("", "label-l", "on-variant", "numeric", xalign=1)
         times.append(self.elapsed)
         times.append(self.duration)
-        col.append(times)
+        seekbox.append(times)
+        card.append(seekbox)
 
         # transport: shuffle · [prev | PLAY | next] · repeat
-        transport = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, margin_top=16)
-        self.shuffle = sym_button("shuffle", "Shuffle", ("m3", "icon", "large", "toggle"),
+        transport = Gtk.CenterBox()
+        self.shuffle = sym_button("shuffle", "Shuffle", ("m3", "icon", "toggle"),
                                   cb=lambda: backend.set_shuffle(
                                       not (backend.active_queue and backend.active_queue.shuffle_enabled)))
         group = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
@@ -143,13 +208,13 @@ class NowPlayingPage(Gtk.Box):
         self.next = sym_button("skip_next", "Next", (), 28, True, backend.next)
         for w in (self.prev, self.play, self.next):
             group.append(w)
-        self.repeat = sym_button("repeat", "Repeat", ("m3", "icon", "large", "toggle"), cb=backend.cycle_repeat)
-        for w in (self.shuffle, group, self.repeat):
-            transport.append(w)
-        col.append(transport)
+        self.repeat = sym_button("repeat", "Repeat", ("m3", "icon", "toggle"), cb=backend.cycle_repeat)
+        transport.set_start_widget(self.shuffle)
+        transport.set_center_widget(group)
+        transport.set_end_widget(self.repeat)
+        card.append(transport)
 
-        # volume + extras
-        extras = Gtk.Box(spacing=8, margin_top=20)
+        vol = Gtk.Box(spacing=10)
         self.mute = sym_button("volume_up", "Mute", ("m3", "icon", "flat"),
                                cb=lambda: backend.set_mute(
                                    not (backend.active_player and backend.active_player.volume_muted)))
@@ -157,33 +222,123 @@ class NowPlayingPage(Gtk.Box):
         self.volume.set_hexpand(True)
         self.volume.set_draw_value(False)
         self.volume.add_css_class("m3-slider")
+        self.volume.add_css_class("thin")
         self.volume.set_valign(Gtk.Align.CENTER)
         self._vol_handler = self.volume.connect("value-changed", self._on_volume)
         self._vol_timer = 0
-        self.fav = sym_button("favorite", "Add to favorites", ("m3", "icon", "toggle"), cb=self._favorite)
-        queue_btn = sym_button("queue_music", "Queue", ("m3", "icon", "tonal"), cb=open_queue)
-        for w in (self.mute, self.volume, self.fav, queue_btn):
-            extras.append(w)
-        col.append(extras)
+        self.vol_value = label("", "label-l", "on-variant", "numeric", ellipsize=False, width_chars=3, xalign=1)
+        for w in (self.mute, self.volume, self.vol_value):
+            vol.append(w)
+        card.append(vol)
+        card.append(Gtk.Box(vexpand=True))
 
-        self.options = NowPlayingOptions(backend, self._show_lyrics, self.seek.set_wavy)
-        col.append(self.options)
+        # ============================================================ tabbed panel
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True)
+        panel.add_css_class("np-panel")
+        panel.set_overflow(Gtk.Overflow.HIDDEN)
+        self.panel = panel
+        self.layout.append(panel)
+
+        phead = Gtk.Box(spacing=4, margin_start=16, margin_end=12, margin_top=12)
+        self.tabs: dict[str, Gtk.ToggleButton] = {}
+        first = None
+        for name, text in TABS:
+            t = Gtk.ToggleButton(label=text, valign=Gtk.Align.CENTER)
+            t.add_css_class("np-tab")
+            if first:
+                t.set_group(first)
+            first = first or t
+            t.connect("toggled", lambda b, n=name: b.get_active() and self._show_tab(n))
+            self.tabs[name] = t
+            phead.append(t)
+        phead.append(Gtk.Box(hexpand=True))
+        phead.append(self.options.more)
+        panel.append(phead)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=200,
+                               vexpand=True)
+        self.lyrics = LyricsView(lambda t: backend.seek(t))
+        self.lyrics.set_margin_start(28)
+        self.lyrics.set_margin_end(20)
+        self.stack.add_named(self.lyrics, "lyrics")
+        self.upnext = QueuePage(backend, compact=True)
+        self.stack.add_named(self.upnext, "queue")
+        djs = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        djbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_start=16, margin_end=16,
+                        margin_top=12, margin_bottom=16)
+        self.transcript = DJTranscript(backend)
+        djbox.append(self.transcript)
+        djs.set_child(djbox)
+        self.stack.add_named(djs, "dj")
+        self.about = TrackAbout()
+        self.stack.add_named(self.about, "about")
+        panel.append(self.stack)
+        self._lyrics_key: str | None = None
+
+        foot = Gtk.Box(spacing=8, margin_start=20, margin_end=16, margin_bottom=16, margin_top=8)
+        for w in (self.options.autoplay, self.options.crossfade, self.options.sleep):
+            foot.append(w)
+        foot.append(Gtk.Box(hexpand=True))
+        self.dj_chip = DJChip(backend)
+        foot.append(self.dj_chip)
+        panel.append(foot)
+
         self.seek.set_wavy(backend.config.wavy_progress)
-        self.visual.set_visible_child_name("lyrics" if backend.config.show_lyrics else "art")
+        tab = backend.config.np_tab if backend.config.np_tab in self.tabs else "lyrics"
+        self.tabs[tab].set_active(True)
+        self.stack.set_visible_child_name(tab)
 
         for sig in ("player-updated", "queue-updated", "active-player-changed", "players-changed",
-                    "status-changed"):
+                    "status-changed", "ai-changed"):
             backend.connect(sig, self._on_change)
         GLib.timeout_add(250, self._tick)
         self.refresh()
 
+    # ------------------------------------------------------------------ layout
+
     def set_narrow(self, narrow: bool) -> None:
+        self._narrow = narrow
         self.layout.set_orientation(Gtk.Orientation.VERTICAL if narrow else Gtk.Orientation.HORIZONTAL)
-        self.layout.set_spacing(24 if narrow else 48)
-        self.col.set_size_request(-1 if narrow else 380, -1)
-        self.art.size = 280 if narrow else 400
-        self.art.queue_resize()
-        self.lyrics.set_size(-1 if narrow else 440, 300 if narrow else 420)
+        self.card.set_size_request(-1 if narrow else CARD_MIN, -1)
+        self.panel.set_size_request(-1, 520 if narrow else -1)
+        self._fit_for = (0, 0)
+        self._set_art_size(280 if narrow else 392)
+
+    def _set_art_size(self, size: int) -> None:
+        if size != self.art.size:
+            self.art.size = size
+            self.art.queue_resize()
+
+    def _fit(self) -> None:
+        """Size the cover to the window: as tall as fits without scrolling, as wide as the panel allows."""
+        width, height = self.get_width(), self.get_height()
+        if self._narrow or height <= 0 or (width, height) == self._fit_for:
+            return
+        self._fit_for = (width, height)
+        _min, nat, _b, _b2 = self.card.measure(Gtk.Orientation.VERTICAL, -1)
+        overhead = nat - self.art.size
+        by_height = height - 52 - 16 - overhead
+        by_width = width - 3 * 16 - PANEL_MIN - 48
+        target = int(max(ART_MIN, min(ART_MAX, by_height, by_width)))
+        if abs(target - self.art.size) > 4:
+            self._fit_art(target)
+
+    def _fit_art(self, size: int) -> None:
+        self._set_art_size(size)
+        self.card.set_size_request(max(CARD_MIN, size + 48), -1)
+
+    # ------------------------------------------------------------------ tabs
+
+    def _show_tab(self, name: str) -> None:
+        self.stack.set_visible_child_name(name)
+        if self.backend.config.np_tab != name:
+            self.backend.config.np_tab = name
+            self.backend.config.save()
+        if name == "lyrics":
+            self._lyrics_key = None
+        elif name == "dj":
+            self.transcript.load()
+        self.refresh()
 
     # ------------------------------------------------------------------ updates
 
@@ -224,8 +379,17 @@ class NowPlayingPage(Gtk.Box):
             self.art.set_icon("audio-x-generic-symbolic")
             self.art.set_shape(ART_PLAYING_SHAPE if playing else ART_PAUSED_SHAPE)
             self.art.set_spinning(SPIN if playing else 0.0)
+        mi = current_media_item(b)
+        self._load_favorite(mi)
         self.options.refresh()
-        self._update_lyrics(title, artist, bool(seg))
+
+        self.tabs["dj"].set_visible(b.ai_available)
+        if self.stack.get_visible_child_name() == "dj" and not b.ai_available:
+            self.tabs["lyrics"].set_active(True)
+        if self.stack.get_visible_child_name() == "lyrics":
+            self._update_lyrics(title, artist, bool(seg))
+        elif self.stack.get_visible_child_name() == "about":
+            self.about.refresh(b)
         self.seek.set_sensitive(bool(duration) and q is not None)
         self.duration.set_label(fmt_time(duration) if duration else "")
 
@@ -242,6 +406,7 @@ class NowPlayingPage(Gtk.Box):
                 self.volume.handler_block(self._vol_handler)
                 self.volume.set_value(vol)
                 self.volume.handler_unblock(self._vol_handler)
+                self.vol_value.set_label(str(int(vol)))
             muted = bool(p.volume_muted)
             self.mute.sym.set_symbol("volume_off" if muted or vol == 0 else
                                      "volume_mute" if vol < 34 else
@@ -251,26 +416,19 @@ class NowPlayingPage(Gtk.Box):
     def _tick(self) -> bool:
         if not self.get_mapped():
             return True
+        self._fit()
         b = self.backend
         _t, _a, _al, dur, _s = track_info(b)
         el = b.elapsed()
         self.seek.set_state(el / dur if dur else 0.0, is_playing(b))
         self.elapsed.set_label(fmt_time(el) if dur else "")
-        if self.visual.get_visible_child() is self.lyrics:
+        if self.stack.get_visible_child_name() == "lyrics":
             self.lyrics.update(el)
         return True
 
     # ------------------------------------------------------------------ lyrics
 
-    def _show_lyrics(self, on: bool) -> None:
-        self.visual.set_visible_child(self.lyrics if on else self.art)
-        if on:
-            self._lyrics_key = None
-            self.refresh()
-
     def _update_lyrics(self, title: str, artist: str, dj_talking: bool) -> None:
-        if not self.backend.config.show_lyrics:
-            return
         key = f"{title}\x00{artist}"
         if key == self._lyrics_key:
             return
@@ -278,7 +436,7 @@ class NowPlayingPage(Gtk.Box):
         if dj_talking:
             self.lyrics.set_message("The DJ is on air")
             return
-        if not title:
+        if not title or title == "Nothing playing":
             self.lyrics.set_message("Nothing playing")
             return
         self.lyrics.set_message("Loading lyrics…")
@@ -299,6 +457,7 @@ class NowPlayingPage(Gtk.Box):
     def _on_volume(self, scale) -> None:
         if self._vol_timer:
             GLib.source_remove(self._vol_timer)
+        self.vol_value.set_label(str(int(scale.get_value())))
 
         def send():
             self._vol_timer = 0
@@ -307,9 +466,55 @@ class NowPlayingPage(Gtk.Box):
 
         self._vol_timer = GLib.timeout_add(120, send)
 
+    # ------------------------------------------------------------------ favorite
+
+    def _show_favorite(self, on: bool) -> None:
+        _set_class(self.fav, "on", on)
+        self.fav.sym.set_fill(on)
+        self.fav.set_tooltip_text("Remove from favorites" if on else "Add to favorites")
+
+    def _load_favorite(self, mi) -> None:
+        uri = getattr(mi, "uri", None)
+        if uri == self._fav_uri:
+            return
+        self._fav_uri, self._fav_on, self._fav_lib = uri, False, None
+        self._show_favorite(False)
+        if not uri:
+            return
+
+        async def go():
+            on, lib = await self.backend.favorite_state(mi)
+            if self._fav_uri == uri:
+                self._fav_on, self._fav_lib = on, lib
+                self._show_favorite(on)
+
+        self.backend.run(go())
+
     def _favorite(self) -> None:
-        self.backend.toggle_favorite_current()
-        self.fav.add_css_class("on")
+        mi = current_media_item(self.backend)
+        if mi is None or not self._fav_uri:
+            # external source (not a queue item): MA can only add what's playing
+            self.backend.toggle_favorite_current()
+            self._show_favorite(True)
+            return
+        uri, want = self._fav_uri, not self._fav_on
+        self._fav_on = want
+        self._show_favorite(want)  # optimistic
+
+        async def go():
+            try:
+                await self.backend.set_favorite(mi, want, self._fav_lib)
+                on, lib = await self.backend.favorite_state(mi)  # confirm with the server
+            except Exception as err:  # noqa: BLE001
+                log.warning("favorite failed: %s", err)
+                on, lib = not want, self._fav_lib
+                if (win := self.get_root()) and hasattr(win, "toast"):
+                    win.toast("Couldn’t update favorites")
+            if self._fav_uri == uri:
+                self._fav_on, self._fav_lib = on, lib
+                self._show_favorite(on)
+
+        self.backend.run(go())
 
 
 class MiniPlayer(Gtk.Box):

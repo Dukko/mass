@@ -286,13 +286,10 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 .mass .mini-player .open-target:hover {{ background: {mix('on-surface', 6)}; }}
 
 /* ------------------------------------------------------------ now playing */
-.mass .np-page {{
-  background-image: radial-gradient(circle at 25% 20%, {mix('primary-container', 70)} 0%,
-                    {mix('primary-container', 0)} 60%);
-}}
-.mass .np-title {{ font-size: 40px; font-weight: 800; letter-spacing: -1px;
+.mass .np-page {{ background: none; }}
+.mass .np-title {{ font-size: 30px; font-weight: 800; letter-spacing: -0.5px;
   font-variation-settings: "ROND" 100; }}
-.mass .np-artist {{ font-size: 22px; font-weight: 650; color: {v('primary')}; }}
+.mass .np-artist {{ font-size: 18px; font-weight: 650; color: {v('primary')}; }}
 .mass .np-album {{ font-size: 15px; color: {v('on-surface-variant')}; }}
 
 /* expressive slider (volume) */
@@ -372,4 +369,40 @@ CSS += f"""
 .mass .lyrics button.lyric-line.current label.lyric {{ color: {v('on-surface')}; }}
 .mass .lyrics label.lyric.plain {{ font-size: 20px; font-weight: 600; color: {v('on-surface')}; }}
 .mass .lyrics label.lyric.dim {{ font-size: 20px; color: {v('on-surface-variant')}; }}
+"""
+
+CSS += f"""
+/* ---------- now playing, option C: player card + tabbed panel */
+.mass .np-card {{
+  padding: 20px 24px 22px; border-radius: 32px;
+  background: {mix('primary-container', 45, v('surface-container'))};
+}}
+.mass .np-card .player-chip {{ background: {mix('primary-container', 80, v('surface-container-high'))};
+  color: {v('on-primary-container')}; }}
+.mass .np-card .np-badge {{ min-height: 28px; }}
+.mass .np-panel {{ border-radius: 32px; background: {v('surface-container-low')}; }}
+.mass button.np-tab {{
+  min-height: 40px; padding: 0 18px; border-radius: 999px; font-size: 15px; font-weight: 650;
+  background: none; box-shadow: none; color: {v('on-surface-variant')};
+  transition: background {EFFECTS}, color {EFFECTS}, border-radius {FAST_SPATIAL};
+}}
+.mass button.np-tab:hover {{ background: {mix('on-surface', 8)}; }}
+.mass button.np-tab:active {{ border-radius: 12px; }}
+.mass button.np-tab:checked {{ background: {v('secondary-container')}; color: {v('on-secondary-container')}; }}
+.mass button.np-fav {{ min-width: 52px; min-height: 52px; }}
+.mass button.np-fav.on {{ border-radius: 999px; }}
+.mass scale.m3-slider.thin trough {{ min-height: 10px; border-radius: 5px; }}
+.mass scale.m3-slider.thin highlight {{ min-height: 10px; border-radius: 5px 2px 2px 5px; }}
+.mass scale.m3-slider.thin slider {{ min-height: 28px; margin: -9px -2px; }}
+.mass menubutton.np-tool > button {{
+  min-height: 32px; padding: 0 12px 0 10px; border-radius: 999px; font-size: 13px; font-weight: 700;
+  background: none; color: {v('on-surface-variant')}; box-shadow: inset 0 0 0 1px {v('outline-variant')};
+  transition: border-radius {FAST_SPATIAL}, background {EFFECTS}, color {EFFECTS};
+}}
+.mass menubutton.np-tool > button:hover {{ background: {mix('on-surface', 8)}; }}
+.mass menubutton.np-tool.on > button, .mass menubutton.np-tool > button:checked {{
+  background: {v('secondary-container')}; color: {v('on-secondary-container')}; box-shadow: none;
+}}
+.mass .np-panel .lyrics label.lyric {{ font-size: 30px; }}
+.mass .np-panel list.m3-list {{ background: none; }}
 """

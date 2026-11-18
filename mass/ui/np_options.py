@@ -1,7 +1,8 @@
 """Now Playing option chips + ⋮ menu, mirroring the Music Assistant web UI.
 
-HR badge · Lyrics · Autoplay · Crossfade · ⋮ (stop, sleep timer, audio overlay, announcement,
-transfer, clear, save as playlist, AI DJ, settings, wavy progress bar)
+Widgets (placed by NowPlayingPage): HR badge · Autoplay · Crossfade · Sleep timer · ⋮ (stop,
+audio overlay, announcement, transfer, clear, save as playlist, AI DJ, settings, wavy progress bar).
+The "np" action group is installed on the page so every one of them can reach it.
 """
 
 from __future__ import annotations
@@ -47,11 +48,9 @@ def audio_quality(backend) -> tuple[str, str] | None:
     return ("HR" if hires else codec or "?"), tip
 
 
-class NowPlayingOptions(Gtk.Box):
-    def __init__(self, backend, on_lyrics, on_wavy) -> None:
-        super().__init__(spacing=8, margin_top=16)
-        self.backend, self.on_lyrics, self.on_wavy = backend, on_lyrics, on_wavy
-        cfg = backend.config
+class NowPlayingOptions:
+    def __init__(self, backend, host: Gtk.Widget, on_wavy) -> None:
+        self.backend, self.host, self.on_wavy = backend, host, on_wavy
 
         self.badge = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         self.badge.add_css_class("np-badge")
@@ -60,38 +59,38 @@ class NowPlayingOptions(Gtk.Box):
         self.badge.append(dot)
         self.badge_lbl = label("HR", ellipsize=False)
         self.badge.append(self.badge_lbl)
-        self.append(self.badge)
 
-        self.lyrics = _tool("lyrics", "Lyrics", toggle=True)
-        self.lyrics.set_active(cfg.show_lyrics)
-        self.lyrics.connect("toggled", self._lyrics_toggled)
         self.autoplay = _tool("autoplay", "Autoplay")
         self.autoplay.set_tooltip_text("Keep playing similar music when the queue ends")
         self.autoplay.connect("clicked", lambda *_: self._flip("autoplay_enabled", backend.set_autoplay))
         self.crossfade = _tool("join", "Crossfade")
         self.crossfade.connect("clicked", lambda *_: self._flip("crossfade_enabled", backend.set_crossfade))
-        for w in (self.lyrics, self.autoplay, self.crossfade):
-            self.append(w)
 
-        self.append(Gtk.Box(hexpand=True))
+        self._sleep_menu = Gio.Menu()
+        self._sleep_at: float | None = None
+        self.sleep = Gtk.MenuButton(menu_model=self._sleep_menu, valign=Gtk.Align.CENTER,
+                                    tooltip_text="Stop playback after a while")
+        self.sleep.add_css_class("np-tool")
+        sb = Gtk.Box(spacing=6)
+        self.sleep_sym = Sym("bedtime", 18)
+        sb.append(self.sleep_sym)
+        self.sleep_lbl = Gtk.Label(label="Sleep timer")
+        sb.append(self.sleep_lbl)
+        self.sleep.set_child(sb)
+        self.sleep.set_create_popup_func(lambda *_: (self._fill_sleep(), self._fetch_sleep()))
+
         self.more = Gtk.MenuButton(tooltip_text="More options", valign=Gtk.Align.CENTER)
         self.more.set_child(Sym("more_vert", 22))
         for c in ("m3", "icon", "flat"):
             self.more.add_css_class(c)
         self.more.set_create_popup_func(self._build_menu)
-        self.append(self.more)
 
-        self._sleep_menu = Gio.Menu()
-        self._sleep_at: float | None = None
         self._install_actions()
         backend.connect("active-player-changed", lambda *_: self._fetch_sleep())
+        GLib.timeout_add_seconds(30, lambda: (self._fill_sleep(), True)[1])  # count the minutes down
+        self._fetch_sleep()
 
     # ------------------------------------------------------------------ chips
-
-    def _lyrics_toggled(self, btn) -> None:
-        self.backend.config.show_lyrics = btn.get_active()
-        self.backend.config.save()
-        self.on_lyrics(btn.get_active())
 
     def _flip(self, attr: str, setter) -> None:
         q = self.backend.active_queue
@@ -142,7 +141,7 @@ class NowPlayingOptions(Gtk.Box):
                                          prefill=True))
         add("settings", self._open_settings, "s")
         self.act_wavy = add("wavy", self._on_wavy, None, GLib.Variant("b", b.config.wavy_progress))
-        self.insert_action_group("np", group)
+        self.host.insert_action_group("np", group)
 
     def _on_overlay(self, act, v) -> None:
         act.set_state(v)
@@ -158,14 +157,14 @@ class NowPlayingOptions(Gtk.Box):
     def _open_settings(self, _a, v) -> None:
         what = v.get_string()
         if what == "app":
-            self.activate_action("app.preferences", None)
+            self.host.activate_action("app.preferences", None)
             return
         p, base = self.backend.active_player, self.backend.config.server_url.rstrip("/")
         if not p or not base:
             return
         suffix = "/dsp" if what == "dsp" else ""
         Gtk.UriLauncher.new(f"{base}/#/settings/editplayer/{p.player_id}{suffix}").launch(
-            self.get_root(), None, None)
+            self.host.get_root(), None, None)
 
     def _ask(self, heading, body, placeholder, verb, cb, prefill=False) -> None:
         dlg = Adw.AlertDialog(heading=heading, body=body)
@@ -178,7 +177,7 @@ class NowPlayingOptions(Gtk.Box):
         dlg.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dlg.set_default_response("ok")
         dlg.connect("response", lambda _d, r: r == "ok" and cb(entry.get_text()))
-        dlg.present(self.get_root())
+        dlg.present(self.host.get_root())
 
     # ------------------------------------------------------------------ menu
 
@@ -192,8 +191,12 @@ class NowPlayingOptions(Gtk.Box):
     def _fill_sleep(self) -> None:
         m = self._sleep_menu
         m.remove_all()
-        if self._sleep_at and self._sleep_at > time.time():
-            left = max(1, round((self._sleep_at - time.time()) / 60))
+        active = bool(self._sleep_at and self._sleep_at > time.time())
+        left = max(1, round((self._sleep_at - time.time()) / 60)) if active else 0
+        self.sleep_lbl.set_label(f"Sleep · {left} min" if active else "Sleep timer")
+        (self.sleep.add_css_class if active else self.sleep.remove_css_class)("on")
+        self.sleep_sym.set_fill(active)
+        if active:
             m.append(f"Stops in {left} min", "np.none")
             m.append("Turn off", "np.sleep(0)")
         for mins in SLEEP_MINUTES:
@@ -203,13 +206,9 @@ class NowPlayingOptions(Gtk.Box):
     def _build_menu(self, button) -> None:
         b = self.backend
         q, p = b.active_queue, b.active_player
-        self._fill_sleep()
-        self._fetch_sleep()
-
         menu = Gio.Menu()
         main = Gio.Menu()
         main.append("Stop playback", "np.stop")
-        main.append_submenu("Sleep timer", self._sleep_menu)
 
         overlay = Gio.Menu()
         self.act_overlay.set_state(GLib.Variant("s", (q.overlay_source or "") if q and q.overlay_enabled else ""))

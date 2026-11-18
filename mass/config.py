@@ -43,7 +43,7 @@ class Config:
     # flatpak: download updates in the background (restart still asks)
     auto_update: bool = True
     # now playing
-    show_lyrics: bool = False
+    np_tab: str = "lyrics"  # lyrics | queue | dj | about
     wavy_progress: bool = True
 
     @classmethod
