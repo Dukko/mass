@@ -13,6 +13,8 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from .common import label
 from .expressive import Sym
+from .player_settings import DSPDialog, PlayerSettingsDialog
+from .signal_path import SignalPathPopover
 
 SLEEP_MINUTES = (15, 30, 45, 60, 90, 120)
 
@@ -44,7 +46,12 @@ def audio_quality(backend) -> tuple[str, str] | None:
     codec = str(getattr(fmt.content_type, "value", fmt.content_type) or "").upper()
     rate = fmt.sample_rate / 1000
     tip = f"{codec} · {rate:g} kHz · {fmt.bit_depth}-bit"
-    hires = (fmt.bit_depth or 16) > 16 or fmt.sample_rate > 48000
+    chain = getattr(sd, "audio_processing", None)
+    quality = str(getattr(chain.input_fidelity.quality, "value", "")) if chain else ""
+    if quality and quality != "unknown":
+        hires = quality == "hi_res"
+    else:
+        hires = (fmt.bit_depth or 16) > 16 or fmt.sample_rate > 48000
     return ("HR" if hires else codec or "?"), tip
 
 
@@ -52,13 +59,16 @@ class NowPlayingOptions:
     def __init__(self, backend, host: Gtk.Widget, on_wavy) -> None:
         self.backend, self.host, self.on_wavy = backend, host, on_wavy
 
-        self.badge = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        # quality badge: click for the signal path (input → processing → output)
+        self.badge = Gtk.MenuButton(valign=Gtk.Align.CENTER, popover=SignalPathPopover(backend))
         self.badge.add_css_class("np-badge")
+        inner = Gtk.Box(spacing=6)
         dot = Gtk.Box(valign=Gtk.Align.CENTER)
         dot.add_css_class("dot")
-        self.badge.append(dot)
+        inner.append(dot)
         self.badge_lbl = label("HR", ellipsize=False)
-        self.badge.append(self.badge_lbl)
+        inner.append(self.badge_lbl)
+        self.badge.set_child(inner)
 
         self.autoplay = _tool("autoplay", "Autoplay")
         self.autoplay.set_tooltip_text("Keep playing similar music when the queue ends")
@@ -108,7 +118,7 @@ class NowPlayingOptions:
         self.badge.set_visible(qual is not None)
         if qual:
             self.badge_lbl.set_label(qual[0])
-            self.badge.set_tooltip_text(qual[1])
+            self.badge.set_tooltip_text(f"{qual[1]}\nClick for the signal path")
             (self.badge.add_css_class if qual[0] == "HR" else self.badge.remove_css_class)("hires")
 
     # ------------------------------------------------------------------ actions
@@ -159,12 +169,10 @@ class NowPlayingOptions:
         if what == "app":
             self.host.activate_action("app.preferences", None)
             return
-        p, base = self.backend.active_player, self.backend.config.server_url.rstrip("/")
-        if not p or not base:
+        p = self.backend.active_player
+        if not p or not self.backend.client:
             return
-        suffix = "/dsp" if what == "dsp" else ""
-        Gtk.UriLauncher.new(f"{base}/#/settings/editplayer/{p.player_id}{suffix}").launch(
-            self.host.get_root(), None, None)
+        (DSPDialog if what == "dsp" else PlayerSettingsDialog)(self.backend, p.player_id, self.host)
 
     def _ask(self, heading, body, placeholder, verb, cb, prefill=False) -> None:
         dlg = Adw.AlertDialog(heading=heading, body=body)

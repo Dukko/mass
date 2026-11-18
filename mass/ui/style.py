@@ -406,3 +406,35 @@ CSS += f"""
 .mass .np-panel .lyrics label.lyric {{ font-size: 30px; }}
 .mass .np-panel list.m3-list {{ background: none; }}
 """
+
+CSS += f"""
+/* ---------- quality badge → signal path popover */
+.mass menubutton.np-badge {{ padding: 0; }}
+.mass menubutton.np-badge > button {{
+  min-height: 32px; padding: 0 12px; border-radius: 999px; background: none; box-shadow: none; color: inherit;
+  transition: background {EFFECTS}, border-radius {FAST_SPATIAL};
+}}
+.mass menubutton.np-badge > button:hover {{ background: {mix('on-surface', 8)}; }}
+.mass menubutton.np-badge > button:checked {{ background: {mix('on-surface', 12)}; }}
+.mass menubutton.np-badge > button:active {{ border-radius: 10px; }}
+.mass popover.signal-path-popover > contents {{
+  padding: 16px 18px 12px; border-radius: 24px; min-width: 300px;
+  background: {v('surface-container-high')}; color: {v('on-surface')};
+}}
+.mass .signal-path .sp-stage {{ margin-top: 10px; }}
+.mass .signal-path .sp-stage:first-child {{ margin-top: 0; }}
+.mass .signal-path .sp-dot {{ min-width: 10px; min-height: 10px; border-radius: 999px; background: {v('outline')}; }}
+.mass .signal-path .sp-dot.lit {{ background: {v('primary')}; }}
+.mass .signal-path .sp-title {{ font-size: 12px; font-weight: 800; letter-spacing: 0.08em; }}
+.mass .signal-path .sp-quality {{ font-size: 12px; color: {v('on-surface-variant')}; }}
+.mass .signal-path .sp-row {{
+  margin-left: 4px; padding: 7px 0 7px 16px; border-left: 2px solid {v('outline-variant')};
+}}
+.mass .signal-path .sp-row-title {{ font-weight: 700; }}
+.mass .signal-path .sp-row-sub {{ font-size: 12px; color: {v('on-surface-variant')}; }}
+.mass .signal-path .sp-info {{ color: {v('on-surface-variant')}; }}
+.mass .signal-path .sp-chip {{
+  font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+  background: {v('tertiary-container')}; color: {v('on-tertiary-container')};
+}}
+"""
