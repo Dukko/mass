@@ -20,6 +20,41 @@
     </ul>
   </description>
   <launchable type="desktop-id">io.github.mass_matugen.Mass.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Home and Now Playing</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/hero.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Now Playing with time-synced lyrics</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/now-playing.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Up next, with AI DJ breaks between tracks</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/queue.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Home</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Library</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/library.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Artist page</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/artist.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Choose and control Music Assistant players</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/players.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>AI Radio DJ hosts and stations</caption>
+      <image>https://raw.githubusercontent.com/Dukko/mass/main/docs/screenshots/ai-radio.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/Dukko/mass</url>
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
