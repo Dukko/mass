@@ -68,6 +68,7 @@ class ArtImage(ShapeArt):
         self.fetch_size = fetch_size if fetch_size is not None else (size * 2 if size < 300 else 0)
         self.keep_stale = keep_stale
         self._url: str | None = None
+        self._load_gen = 0
         self.bytes: bytes | None = None
 
     def set_item(self, item, shape_by_type: bool = True) -> None:
@@ -84,6 +85,8 @@ class ArtImage(ShapeArt):
                 on_loaded(self.bytes)
             return
         self._url = url
+        self._load_gen += 1
+        gen = self._load_gen
         if not url:
             self.bytes = None
             self.set_texture(None, animate=False)
@@ -101,16 +104,22 @@ class ArtImage(ShapeArt):
 
         async def load():
             data = await self.backend.fetch_image(url)
-            if url != self._url or not data:
+            if gen != self._load_gen:
+                return
+            if not data:
+                # Don't pin the URL to a failed fetch: rebinding the same item retries it.
+                self._url = None
                 return
             try:  # decode off the main thread: a big JPEG takes long enough to drop frames
                 tex = await asyncio.to_thread(Gdk.Texture.new_from_bytes, GLib.Bytes.new(data))
             except GLib.Error:
+                if gen == self._load_gen:
+                    self._url = None
                 return
             _TEXTURES[url] = (tex, data)
             while len(_TEXTURES) > _TEXTURE_CACHE_MAX:
                 _TEXTURES.popitem(last=False)
-            if url != self._url:
+            if gen != self._load_gen:
                 return
             self.bytes = data
             self.set_texture(tex, animate=True)
