@@ -58,6 +58,19 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.2" date="2026-11-19">
+      <description>
+        <ul>
+          <li>Window transparency with optional background blur, in Preferences → Appearance</li>
+          <li>Media keys now control Spotify Connect and other external sources</li>
+          <li>The library no longer goes stale or empty after a reconnect</li>
+          <li>Dragging a volume slider is no longer interrupted by server updates</li>
+          <li>Toggling the local player no longer freezes the window</li>
+          <li>Quitting now closes the server connection cleanly</li>
+          <li>Fixed DSP filter buttons acting on the wrong filter when clicked quickly</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.1" date="2026-11-18">
       <description>
         <ul>
