@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 mass = "mass.__main__:main"
+mass-sendspin = "mass.sendspin_shim:main"
 
 [tool.setuptools.packages.find]
 include = ["mass*"]
