@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 from gi.repository import Adw, Gio, GLib
+from music_assistant_models.enums import PlaybackState
 
 from . import APP_ID, APP_NAME, __version__
-from .backend import Backend
+from .backend import Backend, Status
 from .config import Config
 from .endpoint import Endpoint
 from .mpris import MprisServer
-from .theme import ThemeManager
 from .notify import Notifier
+from .theme import ThemeManager
 from .tray import Tray
-from .updater import Updater
 from .ui.nowplaying import art_url, track_info
-from music_assistant_models.enums import PlaybackState
+from .updater import Updater
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class MassApp(Adw.Application):
         if not self._shot:
             self.updater.start()
         # clean shutdown (stop the child endpoint, release MPRIS) on Ctrl+C / kill
-        for sig in (2, 15):
+        for sig in (signal.SIGINT, signal.SIGTERM):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda *_: (self.quit(), False)[1])
         # keep running even with no window so MPRIS / media keys keep working
         self.hold()
@@ -109,7 +110,7 @@ class MassApp(Adw.Application):
             if self.backend.connected:
                 self.activate_action(name, None)
                 return False
-            if self.backend.status == "auth-required":
+            if self.backend.status == Status.AUTH_REQUIRED:
                 self.activate()  # show the login instead of failing silently
                 return False
             if attempts >= 150:  # ~30 s
@@ -134,7 +135,7 @@ class MassApp(Adw.Application):
                 page = rest[1]
                 GLib.timeout_add_seconds(max(1, delay - 2), lambda: (self.window.show_page(page), False)[1])
             GLib.timeout_add_seconds(delay, self._screenshot, path)
-        if self.backend.status == "auth-required":
+        if self.backend.status == Status.AUTH_REQUIRED:
             self.window.show_login()
 
     def _screenshot(self, path: str) -> bool:
@@ -301,7 +302,7 @@ class MassApp(Adw.Application):
                            ("Ctrl+F", "Search"), ("Ctrl+,", "Preferences"), ("Ctrl+W", "Close window"),
                            ("Ctrl+Q", "Quit")):
             row = Adw.ActionRow(title=what)
-            row.add_suffix(Gtk_label(keys))
+            row.add_suffix(_shortcut_label(keys))
             grp.add(row)
         page.add(grp)
         tv = Adw.ToolbarView(content=page)
@@ -333,7 +334,7 @@ class MassApp(Adw.Application):
         self.backend.run(send())
 
 
-def Gtk_label(text: str):  # noqa: N802 - tiny helper to avoid importing Gtk at module top
+def _shortcut_label(text: str):
     from gi.repository import Gtk
 
     lbl = Gtk.Label(label=text)

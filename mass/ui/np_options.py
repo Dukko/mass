@@ -78,6 +78,8 @@ class NowPlayingOptions:
 
         self._sleep_menu = Gio.Menu()
         self._sleep_at: float | None = None
+        self._sleep_tick = 0
+        self._sleep_refresh = 0
         self.sleep = Gtk.MenuButton(menu_model=self._sleep_menu, valign=Gtk.Align.CENTER,
                                     tooltip_text="Stop playback after a while")
         self.sleep.add_css_class("np-tool")
@@ -97,7 +99,8 @@ class NowPlayingOptions:
 
         self._install_actions()
         backend.connect("active-player-changed", lambda *_: self._fetch_sleep())
-        GLib.timeout_add_seconds(30, lambda: (self._fill_sleep(), True)[1])  # count the minutes down
+        self._sleep_tick = GLib.timeout_add_seconds(30, self._count_down_sleep)
+        self.host.connect("destroy", self._on_destroy)
         self._fetch_sleep()
 
     # ------------------------------------------------------------------ chips
@@ -138,8 +141,14 @@ class NowPlayingOptions:
 
         add("stop", lambda *_: b.stop_playback())
         add("clear", lambda *_: b.clear_queue())
-        add("sleep", lambda _a, v: (b.set_sleep_timer(v.get_int32()),
-                                    GLib.timeout_add(600, lambda: (self._fetch_sleep(), False)[1])), "i")
+
+        def set_sleep(_action, value) -> None:
+            b.set_sleep_timer(value.get_int32())
+            if self._sleep_refresh:
+                GLib.source_remove(self._sleep_refresh)
+            self._sleep_refresh = GLib.timeout_add(600, self._refresh_sleep_soon)
+
+        add("sleep", set_sleep, "i")
         self.act_overlay = add("overlay", self._on_overlay, "s", GLib.Variant("s", ""))
         add("transfer", lambda _a, v: b.transfer_to(v.get_string()), "s")
         self.act_dj = add("dj", lambda a, v: (a.set_state(v), b.set_dj(v.get_string() or None)), "s",
@@ -188,6 +197,21 @@ class NowPlayingOptions:
         dlg.present(self.host.get_root())
 
     # ------------------------------------------------------------------ menu
+
+    def _count_down_sleep(self) -> bool:
+        self._fill_sleep()
+        return True
+
+    def _refresh_sleep_soon(self) -> bool:
+        self._sleep_refresh = 0
+        self._fetch_sleep()
+        return False
+
+    def _on_destroy(self, *_args) -> None:
+        for source in (self._sleep_tick, self._sleep_refresh):
+            if source:
+                GLib.source_remove(source)
+        self._sleep_tick = self._sleep_refresh = 0
 
     def _fetch_sleep(self) -> None:
         async def go():

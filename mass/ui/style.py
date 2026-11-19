@@ -481,10 +481,10 @@ CSS += f"""
 .mass flowboxchild:active .tile {{ transform: scale(0.96); }}
 """
 
-CSS += f"""
+CSS += """
 /* ---------- DJ editor text areas */
-.mass .dj-text-card {{ border-radius: 16px; }}
-.mass textview.dj-text, .mass textview.dj-text > text {{ background: none; font-size: 14px; }}
+.mass .dj-text-card { border-radius: 16px; }
+.mass textview.dj-text, .mass textview.dj-text > text { background: none; font-size: 14px; }
 """
 
 CSS += f"""

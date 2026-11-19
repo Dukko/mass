@@ -125,19 +125,9 @@ def shape_points(radii_from: list[float], radii_to: list[float], t: float, w: fl
     rx, ry = w / 2, h / 2
     unit = _unit_circle(len(radii_to))
     if t == 1.0 or radii_from is radii_to:  # t may overshoot 1 with a bouncy spring: extrapolate
-        return [(rx + rx * r * c, ry + ry * r * s) for (c, s), r in zip(unit, radii_to)]
+        return [(rx + rx * r * c, ry + ry * r * s) for (c, s), r in zip(unit, radii_to, strict=False)]
     return [(rx + rx * (a + (b - a) * t) * c, ry + ry * (a + (b - a) * t) * s)
-            for (c, s), a, b in zip(unit, radii_from, radii_to)]
-
-
-def build_shape_path(radii: list[float], w: float, h: float, rotation: float = 0.0) -> Gsk.Path:
-    if rotation:
-        n = len(radii)
-        pts = [(w / 2 + w / 2 * r * math.cos(2 * math.pi * i / n + rotation),
-                h / 2 + h / 2 * r * math.sin(2 * math.pi * i / n + rotation)) for i, r in enumerate(radii)]
-    else:
-        pts = shape_points(radii, radii, 1.0, w, h)
-    return _polygon(pts)
+            for (c, s), a, b in zip(unit, radii_from, radii_to, strict=False)]
 
 
 MASK_PAD = 2  # transparent device pixels around a shape mask, so filtering never samples a neighbour
@@ -163,16 +153,6 @@ def build_shape_mask(pts: list[tuple[float, float]], w: float, h: float, scale: 
     surf.flush()
     data = GLib.Bytes.new(bytes(surf.get_data()))
     return Gdk.MemoryTexture.new(pw, ph, Gdk.MemoryFormat.A8, data, surf.get_stride())
-
-
-def _polygon(pts: list[tuple[float, float]]) -> Gsk.Path:
-    b = Gsk.PathBuilder.new()
-    b.move_to(*pts[0])
-    line_to = b.line_to
-    for x, y in pts[1:]:
-        line_to(x, y)
-    b.close()
-    return b.to_path()
 
 
 def _rgba(r, g, b, a=1.0) -> Gdk.RGBA:
@@ -254,7 +234,7 @@ class ShapeArt(Gtk.Widget):
         t = self._morph.value
         if t >= 1.0 and self._morph.settled:
             return self._to
-        return [a + (b - a) * t for a, b in zip(self._from, self._to)]
+        return [a + (b - a) * t for a, b in zip(self._from, self._to, strict=False)]
 
     def _ensure_tick(self) -> None:
         if not self._tick_id and not _held(self):
@@ -627,7 +607,6 @@ SYMBOL_FALLBACKS = {
     "auto_awesome": "starred-symbolic",
     "stop": "media-playback-stop-symbolic",
     "visibility": "view-reveal-symbolic",
-    "lyrics": "format-justify-left-symbolic",
     "autoplay": "media-playlist-repeat-symbolic",
     "join": "media-playlist-consecutive-symbolic",
     "bedtime": "weather-clear-night-symbolic",

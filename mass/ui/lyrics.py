@@ -39,9 +39,6 @@ class LyricsView(Gtk.ScrolledWindow):
         self._anim: Adw.TimedAnimation | None = None
         self.set_message("Lyrics")
 
-    def set_size(self, w: int, h: int) -> None:
-        self.set_size_request(w, h)
-
     def _clear(self) -> None:
         while c := self.box.get_first_child():
             self.box.remove(c)

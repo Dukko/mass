@@ -296,7 +296,8 @@ class NowPlayingPage(Gtk.Box):
         for sig in ("player-updated", "queue-updated", "active-player-changed", "players-changed",
                     "status-changed", "ai-changed"):
             backend.connect(sig, self._on_change)
-        GLib.timeout_add(250, self._tick)
+        self._tick_source = GLib.timeout_add(250, self._tick)
+        self.connect("destroy", lambda *_: GLib.source_remove(self._tick_source))
         self.refresh()
 
     # ------------------------------------------------------------------ layout
@@ -593,7 +594,8 @@ class MiniPlayer(Gtk.Box):
         for sig in ("player-updated", "queue-updated", "active-player-changed", "players-changed",
                     "status-changed"):
             backend.connect(sig, lambda *_: schedule_refresh(self))
-        GLib.timeout_add(500, self._tick)
+        self._tick_source = GLib.timeout_add(500, self._tick)
+        self.connect("destroy", lambda *_: GLib.source_remove(self._tick_source))
         self.refresh()
 
     def set_narrow(self, narrow: bool) -> None:

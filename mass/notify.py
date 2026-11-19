@@ -28,9 +28,11 @@ class Notifier:
         self._other: dict[int, object] = {}  # notification id -> callback(action_key)
         try:
             self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            self._bus.signal_subscribe(
-                "org.freedesktop.Notifications", "org.freedesktop.Notifications", "ActionInvoked",
-                "/org/freedesktop/Notifications", None, Gio.DBusSignalFlags.NONE, self._on_signal)
+            for sig, handler in (("ActionInvoked", self._on_signal),
+                                 ("NotificationClosed", self._on_closed)):
+                self._bus.signal_subscribe(
+                    "org.freedesktop.Notifications", "org.freedesktop.Notifications", sig,
+                    "/org/freedesktop/Notifications", None, Gio.DBusSignalFlags.NONE, handler)
         except GLib.Error as err:
             log.warning("no session bus for notifications: %s", err.message)
 
@@ -40,6 +42,10 @@ class Notifier:
             self.on_action(key)
         elif cb := self._other.pop(nid, None):
             cb(key)
+
+    def _on_closed(self, _conn, _sender, _path, _iface, _signal, params) -> None:
+        nid, _reason = params.unpack()
+        self._other.pop(nid, None)
 
     def message(self, title: str, body: str, actions: list[tuple[str, str]], on_action) -> None:
         """A persistent app notification (not the track one), e.g. "update ready"."""
