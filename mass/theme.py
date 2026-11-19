@@ -25,6 +25,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 from .config import CACHE_DIR, CONFIG_DIR
 from .host import HOST_CACHE, host_cmd
 from .ui.style import CSS as STYLE_CSS
+from .ui.style import FALLBACKS
 
 log = logging.getLogger(__name__)
 
@@ -59,10 +60,9 @@ def _parse_palette_file(path: Path) -> tuple[str | None, dict[str, Palette]] | N
     return mode, out
 
 
-def build_css(p: Palette) -> str:
-    """Variables only: libadwaita's own + every Material token as --md-*."""
+def _adw_vars(p: Palette) -> dict[str, str]:
     g = lambda k, fb="surface": p.get(k) or p.get(fb, "#808080")  # noqa: E731
-    adw = {
+    return {
         "accent-bg-color": g("primary"),
         "accent-fg-color": g("on_primary"),
         "accent-color": g("primary"),
@@ -95,6 +95,11 @@ def build_css(p: Palette) -> str:
         "overview-bg-color": g("surface_container_low"),
         "overview-fg-color": g("on_surface"),
     }
+
+
+def build_css(p: Palette) -> str:
+    """Variables only: libadwaita's own + every Material token as --md-*."""
+    adw = _adw_vars(p)
     lines = [":root {"]
     lines += [f"  --{k}: {v};" for k, v in adw.items()]
     lines += [f"  --md-{k.replace('_', '-')}: {v};" for k, v in p.items()]
@@ -102,6 +107,41 @@ def build_css(p: Palette) -> str:
     # legacy named colors, for anything still using @accent_bg_color etc.
     lines += [f"@define-color {k.replace('-', '_')} {v};" for k, v in adw.items()]
     return "\n".join(lines)
+
+
+_MD_SURFACES = ("background", "surface", "surface_dim", "surface_bright", "surface_container_lowest",
+                "surface_container_low", "surface_container", "surface_container_high",
+                "surface_container_highest")
+_ADW_SURFACES = ("window-bg-color", "view-bg-color", "headerbar-bg-color", "headerbar-backdrop-color",
+                 "sidebar-bg-color", "sidebar-backdrop-color", "secondary-sidebar-bg-color",
+                 "card-bg-color", "overview-bg-color")
+
+
+def translucency_css(p: Palette, transparency: int, blur: bool) -> str:
+    """Fade the main window's surfaces; popovers and dialogs stay opaque.
+
+    Popovers are their own Wayland surfaces with no blur, and dialogs float over
+    content, so both get the opaque values back. Stacked panels compound their
+    alpha, which keeps higher elevations more solid.
+    """
+    if transparency <= 0:
+        return ""
+    opaque: dict[str, str] = {}
+    for tok in _MD_SURFACES:
+        if val := p.get(tok) or FALLBACKS.get(tok.replace("_", "-")):
+            opaque[f"--md-{tok.replace('_', '-')}"] = val
+    if p:  # Plain Adwaita mode has no hex values to fade without a var() cycle
+        adw = _adw_vars(p)
+        opaque |= {f"--{k}": adw[k] for k in _ADW_SURFACES}
+    keep = 100 - min(transparency, 90)
+    faded = [f"  {k}: color-mix(in srgb, {v} {keep}%, transparent);" for k, v in opaque.items()]
+    if blur:
+        # GTK turns this on a toplevel into an ext-background-effect-v1 blur region;
+        # the compositor picks the strength (niri: the `blur {}` config section)
+        faded.append("  backdrop-filter: blur(24px);")
+    restored = [f"  {k}: {v};" for k, v in opaque.items()]
+    return "\n".join(["window.mass {", *faded, "}",
+                      "window.mass popover, window.mass dialog {", *restored, "}"])
 
 
 class ThemeManager(GObject.Object):
@@ -184,6 +224,10 @@ class ThemeManager(GObject.Object):
             self.set_artwork(self._art_bytes)
         self.reload()
 
+    def set_translucency(self, transparency: int, blur: bool) -> None:
+        self.config.transparency, self.config.blur = transparency, blur
+        self._apply(self.palette, self.source)
+
     def _sync_scheme(self, mode: str) -> None:
         # Only nudge libadwaita if the portal didn't already tell it the right thing.
         want_dark = mode == "dark"
@@ -192,7 +236,8 @@ class ThemeManager(GObject.Object):
 
     def _apply(self, palette: Palette, source: str) -> None:
         self.palette, self.source = palette, source
-        css = build_css(palette) if palette else ""
+        css = (build_css(palette) if palette else "") + "\n" + translucency_css(
+            palette, self.config.transparency, self.config.blur)
         if css == getattr(self, "_css", None):
             return  # reloading a provider restyles every widget; skip no-ops
         self._css = css

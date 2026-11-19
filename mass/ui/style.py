@@ -10,7 +10,7 @@ fallbacks so the "Plain Adwaita" mode still looks right.
 
 from __future__ import annotations
 
-_FALLBACKS = {
+FALLBACKS = {
     "primary": "var(--accent-bg-color)",
     "on-primary": "var(--accent-fg-color)",
     "primary-container": "color-mix(in srgb, var(--accent-bg-color) 30%, var(--window-bg-color))",
@@ -36,7 +36,7 @@ _FALLBACKS = {
 
 
 def v(name: str) -> str:
-    return f"var(--md-{name}, {_FALLBACKS[name]})"
+    return f"var(--md-{name}, {FALLBACKS[name]})"
 
 
 def mix(name: str, pct: int, other: str = "transparent") -> str:

@@ -95,6 +95,43 @@ class LoginDialog(Adw.Dialog):
         self.error.set_visible(True)
 
 
+class _TranslucencyRows:
+    def __init__(self, app, group: Adw.PreferencesGroup) -> None:
+        self.app = app
+        self._save_id = 0
+        cfg = app.config
+        row = Adw.ActionRow(title="Transparency", subtitle="Main window background")
+        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 90, 5)
+        self.scale.set_value(cfg.transparency)
+        self.scale.set_hexpand(True)
+        self.scale.set_valign(Gtk.Align.CENTER)
+        self.scale.set_size_request(200, -1)
+        self.scale.set_draw_value(True)
+        self.scale.set_value_pos(Gtk.PositionType.RIGHT)
+        self.scale.set_format_value_func(lambda _s, v: f"{v:.0f}%")
+        self.scale.connect("value-changed", lambda *_: self._changed())
+        row.add_suffix(self.scale)
+        self.blur = Adw.SwitchRow(title="Blur behind window",
+                                  subtitle="Strength is set by the compositor (niri: the blur section)",
+                                  active=cfg.blur, sensitive=cfg.transparency > 0)
+        self.blur.connect("notify::active", lambda *_: self._changed())
+        group.add(row)
+        group.add(self.blur)
+
+    def _changed(self) -> None:
+        value = round(self.scale.get_value())
+        self.blur.set_sensitive(value > 0)
+        self.app.theme.set_translucency(value, self.blur.get_active())
+        if self._save_id:
+            GLib.source_remove(self._save_id)
+        self._save_id = GLib.timeout_add(400, self._save)
+
+    def _save(self) -> bool:
+        self._save_id = 0
+        self.app.config.save()
+        return GLib.SOURCE_REMOVE
+
+
 class PreferencesDialog(Adw.PreferencesDialog):
     def __init__(self, app) -> None:
         super().__init__(title="Preferences", search_enabled=False)
@@ -137,6 +174,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         sch.connect("notify::selected", set_scheme)
         look.add(sch)
+        self._translucency = _TranslucencyRows(app, look)
         src = Adw.ActionRow(title="Active palette", subtitle=app.theme.source)
         look.add(src)
         app.theme.connect("palette-changed", lambda t: src.set_subtitle(t.source))

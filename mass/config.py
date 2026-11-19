@@ -30,6 +30,10 @@ class Config:
     # | "adwaita" (no custom colors)
     theme_mode: str = "system"
     matugen_scheme: str = "scheme-tonal-spot"
+    # window surfaces, 0 (opaque) .. 90 percent see-through
+    transparency: int = 0
+    # ask the compositor to blur what's behind (ext-background-effect-v1)
+    blur: bool = True
     # local playback endpoint (sendspin daemon)
     endpoint_enabled: bool = True
     endpoint_name: str = field(default_factory=lambda: f"{socket.gethostname()} (Mass)")
