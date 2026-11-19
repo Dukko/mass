@@ -146,7 +146,12 @@ class DJTranscript(Gtk.ListBox):
 
         async def go():
             items = await self.backend.client.player_queues.get_queue_items(q.queue_id, limit=500)
-            self._fill(items, q.current_index)
+            q2 = self.backend.active_queue  # q is a stale snapshot by now: the client replaces it per update
+            if not q2 or q2.queue_id != q.queue_id:
+                return
+            cur = q2.current_item.queue_item_id if q2.current_item else None
+            ids = [i.queue_item_id for i in items]
+            self._fill(items, ids.index(cur) if cur in ids else q2.current_index)
 
         self.backend.run(go())
 

@@ -22,6 +22,8 @@ class QueuePage(Gtk.Box):
         self._qid: str | None = None
         self._ids: list[str] | None = None
         self._current_index: int | None = None
+        self._rows: set[Gtk.Box] = set()  # the row widgets that exist (only those on screen, recycled)
+        self._gen = 0  # bumps per fetch, so a slow older response can't overwrite a newer one
 
         head = Gtk.Box(spacing=12, margin_start=28, margin_end=28, margin_top=56, margin_bottom=8)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
@@ -43,6 +45,8 @@ class QueuePage(Gtk.Box):
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self._setup)
         factory.connect("bind", self._bind)
+        factory.connect("unbind", lambda _f, li: setattr(li.get_child(), "pos", None))
+        factory.connect("teardown", lambda _f, li: self._rows.discard(li.get_child()))
         self.list = Gtk.ListView(model=Gtk.NoSelection(model=self.store), factory=factory,
                                  single_click_activate=True)
         self.list.add_css_class("m3-list")
@@ -71,12 +75,20 @@ class QueuePage(Gtk.Box):
             return
         cur = q.current_item.queue_item_id if q.current_item else None
         idx = q.current_index
-        stale = (cur is not None and self._ids is not None and idx is not None
-                 and 0 <= idx < len(self._ids) and self._ids[idx] != cur)
+        # the current item isn't in the list we show (and should be): it's out of date
+        stale = (cur is not None and self._ids is not None and cur not in self._ids
+                 and idx is not None and idx < len(self._ids))
         if q.queue_id != self._qid or stale:
-            self.reload()  # the list we show is out of date (or it's another queue): fetch it again
-        elif idx != self._current_index:
-            self._highlight(idx)
+            self.reload()
+        else:
+            self._highlight(self._current_pos(q))
+
+    def _current_pos(self, q) -> int | None:
+        """Row of the playing item, found by id: the server's index can lag or refer to another list."""
+        cur = q.current_item.queue_item_id if q.current_item else None
+        if cur is not None and self._ids and cur in self._ids:
+            return self._ids.index(cur)
+        return q.current_index
 
     def reload(self) -> None:
         if not self.get_mapped() and not self.compact:
@@ -91,12 +103,19 @@ class QueuePage(Gtk.Box):
             self.stack.set_visible_child_name("empty")
             return
         qid = q.queue_id
+        self._gen += 1
+        gen = self._gen
+
+        def populate(items):
+            # the client replaces the PlayerQueue object on every update, so read it now, not at fetch time
+            q2 = self.backend.active_queue
+            if gen == self._gen and q2 and q2.queue_id == qid:
+                self._populate(q2, items)
 
         async def load():
             items = await self.backend.client.player_queues.get_queue_items(qid, limit=500)
-            q2 = self.backend.active_queue
-            if q2 and q2.queue_id == qid:
-                after_motion(self, lambda: self._populate(q2, items))
+            if gen == self._gen:
+                after_motion(self, lambda: populate(items))
 
         self.backend.run(load())
 
@@ -106,7 +125,7 @@ class QueuePage(Gtk.Box):
     def _populate(self, q, items) -> None:
         ids = [i.queue_item_id for i in items]
         if q.queue_id == self._qid and ids == self._ids:
-            self._highlight(q.current_index)
+            self._highlight(self._current_pos(q))
             return
         vadj = self.scroller.get_vadjustment()
         scroll = vadj.get_value() if q.queue_id == self._qid else 0
@@ -119,7 +138,7 @@ class QueuePage(Gtk.Box):
         self.stack.set_visible_child_name("list")
         total = sum(i.duration or 0 for i in items)
         self.summary.set_label(f"{q.display_name} · {len(items)} tracks · {fmt_time(total)}")
-        self._current_index = q.current_index
+        self._current_index = self._current_pos(q)
         self.store.splice(0, self.store.get_n_items(), [ItemObject(i) for i in items])  # no widgets made here
         if self.compact:
             self._scroll_to_current()
@@ -151,6 +170,8 @@ class QueuePage(Gtk.Box):
         box.append(nxt)
         box.append(rm)
         box.item = None
+        box.pos = None
+        self._rows.add(box)
         box.parts = (art, dj_art, title, sub, dur)
         li.set_child(box)
 
@@ -160,6 +181,7 @@ class QueuePage(Gtk.Box):
         pos = li.get_position()
         art, dj_art, title, sub, dur = box.parts
         box.item = it
+        box.pos = pos
         mi = it.media_item
         seg = dj_segment(it)
         art.set_visible(not seg)
@@ -181,11 +203,12 @@ class QueuePage(Gtk.Box):
             (box.add_css_class if on else box.remove_css_class)(cls)
 
     def _highlight(self, index: int | None) -> None:
-        old, self._current_index = self._current_index, index
-        n = self.store.get_n_items()
-        for pos in {old, index}:
-            if pos is not None and 0 <= pos < n:
-                self.store.items_changed(pos, 1, 1)  # rebind just those rows
+        if index == self._current_index:
+            return
+        self._current_index = index
+        # restyle the rows directly: items_changed() with the same item doesn't rebind it (GTK 4.24)
+        for box in self._rows:
+            (box.add_css_class if box.pos is not None and box.pos == index else box.remove_css_class)("current")
         if self.compact:
             self._scroll_to_current()
 
