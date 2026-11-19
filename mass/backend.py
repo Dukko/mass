@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 import urllib.parse
+from collections import OrderedDict
 from typing import Any
 
 import aiohttp
@@ -33,6 +34,7 @@ log = logging.getLogger(__name__)
 FAVORITABLE = {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.RADIO,
                MediaType.AUDIOBOOK, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
 IMAGE_RETRY_AFTER = 300  # seconds before retrying an image that failed to load
+IMAGE_CACHE_MAX = 400  # covers kept decoded in memory; oldest used is dropped first
 
 class Status:
     IDLE = "idle"
@@ -64,7 +66,7 @@ class Backend(GObject.Object):
         self._runner: asyncio.Task | None = None
         self._tasks: set[asyncio.Future] = set()
         self._token: str | None = None
-        self._image_cache: dict[str, bytes] = {}
+        self._image_cache: OrderedDict[str, bytes] = OrderedDict()
         self._image_failed: dict[str, float] = {}  # url -> monotonic time to retry after
         self.dj_hosts: dict[str, dict] = {}
         self._lyrics: dict[str, tuple[str | None, str | None]] = {}
@@ -323,6 +325,7 @@ class Backend(GObject.Object):
         if not url:
             return None
         if (data := self._image_cache.get(url)) is not None:
+            self._image_cache.move_to_end(url)
             return data
         if self._image_failed.get(url, 0) > time.monotonic():
             return None  # failed recently; don't stall another 15 s on it
@@ -335,16 +338,25 @@ class Backend(GObject.Object):
         try:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
                 if r.status != 200:
+                    self._image_failed_later(url)
                     return None
                 data = await r.read()
         except (aiohttp.ClientError, TimeoutError) as err:
             log.debug("image fetch failed %s: %r", url, err)
-            self._image_failed[url] = time.monotonic() + IMAGE_RETRY_AFTER
+            self._image_failed_later(url)
             return None
-        if len(self._image_cache) > 400:
-            self._image_cache.clear()
         self._image_cache[url] = data
+        self._image_cache.move_to_end(url)
+        while len(self._image_cache) > IMAGE_CACHE_MAX:
+            self._image_cache.popitem(last=False)
         return data
+
+    def _image_failed_later(self, url: str) -> None:
+        """Remember a failed cover briefly, and forget failures that have expired."""
+        now = time.monotonic()
+        self._image_failed[url] = now + IMAGE_RETRY_AFTER
+        if len(self._image_failed) > 2 * IMAGE_CACHE_MAX:
+            self._image_failed = {u: t for u, t in self._image_failed.items() if t > now}
 
     # ------------------------------------------------------------------ commands
 
