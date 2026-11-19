@@ -24,7 +24,20 @@ log = logging.getLogger(__name__)
 
 ITEM_PATH = "/StatusNotifierItem"
 MENU_PATH = "/MenuBar"
-ICON_FILE = data_file("icons", f"{APP_ID}.svg") or Path(f"/app/share/icons/hicolor/scalable/apps/{APP_ID}.svg")
+
+
+def _icon_file() -> Path | None:
+    """The app icon from the source tree, the sandbox, or an installed hicolor theme."""
+    if p := data_file("icons", f"{APP_ID}.svg"):
+        return p
+    rel = Path("icons", "hicolor", "scalable", "apps", f"{APP_ID}.svg")
+    for base in (GLib.get_user_data_dir(), *GLib.get_system_data_dirs(), "/app/share"):
+        if (p := Path(base, rel)).exists():
+            return p
+    return None
+
+
+ICON_FILE = _icon_file()
 
 SNI_XML = """
 <node><interface name="org.kde.StatusNotifierItem">
@@ -90,6 +103,8 @@ MENU_XML = """
 def _pixmaps() -> list[tuple[int, int, bytes]]:
     """ARGB32 (network byte order) pixmaps of the app icon at a few sizes."""
     out = []
+    if ICON_FILE is None:
+        return out
     for size in (22, 32, 48, 64):
         try:
             pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(ICON_FILE), size, size)
