@@ -58,6 +58,14 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.0" date="2026-11-18">
+      <description>
+        <ul>
+          <li>Fixed Up next getting stuck highlighting the first track</li>
+          <li>Fixed the AI DJ tab marking the wrong break as on air</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-11-18">
       <description>
         <p>The first stable release.</p>
