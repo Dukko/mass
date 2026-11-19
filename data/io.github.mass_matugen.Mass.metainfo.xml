@@ -58,6 +58,14 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.1" date="2026-11-18">
+      <description>
+        <ul>
+          <li>Fixed the volume controls doing nothing on the local player</li>
+          <li>The info buttons in the signal path now show their explanation</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-11-18">
       <description>
         <ul>
