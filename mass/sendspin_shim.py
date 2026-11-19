@@ -31,7 +31,17 @@ def _patch() -> None:
         import pulsectl
         import pulsectl_asyncio
         from sendspin import hardware_volume as hv
-    except ImportError:
+    except ImportError as e:
+        log.warning("Flatpak volume patch not applied, import failed: %s", e)
+        return
+    controller = getattr(hv, "HardwareVolumeController", None)
+    missing = [name for name, obj in (
+        ("hardware_volume._get_sink", getattr(hv, "_get_sink", None)),
+        ("HardwareVolumeController.set_state", getattr(controller, "set_state", None)),
+    ) if obj is None]
+    if missing:
+        log.warning("Flatpak volume patch not applied, sendspin no longer has: %s",
+                    ", ".join(missing))
         return
     orig = hv.HardwareVolumeController.set_state
 

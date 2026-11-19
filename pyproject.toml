@@ -9,7 +9,7 @@ description = "Music Assistant desktop player with matugen theming and deep Linu
 requires-python = ">=3.12"
 dependencies = [
     "music-assistant-client>=1.8",
-    "sendspin>=9.0",
+    "sendspin>=9.1,<9.2",
     "aiohttp>=3.9",
     "zeroconf>=0.130",
 ]
