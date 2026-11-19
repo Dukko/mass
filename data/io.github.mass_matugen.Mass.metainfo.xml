@@ -18,6 +18,11 @@
       <li>Time-synced lyrics, AI Radio DJ hosts and stations</li>
       <li>MPRIS, notifications and a tray icon</li>
     </ul>
+    <p>
+      The Flatpak build uses the host's Flatpak portal to run matugen for album-art colors and
+      systemctl for a background player service, and writes a systemd user unit. It is distributed
+      from the project's own Flatpak repository rather than Flathub because of that host access.
+    </p>
   </description>
   <launchable type="desktop-id">io.github.mass_matugen.Mass.desktop</launchable>
   <screenshots>

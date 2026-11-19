@@ -115,7 +115,9 @@ save queue as playlist, all matching the Music Assistant web UI.
 
 ## Requirements
 
-A Music Assistant server (schema 28+). You sign in with your MA account, and the token is stored in your keyring.
+A Music Assistant server (schema 28+). Library sorting uses the typed sort API from schema 86;
+older servers fall back to legacy ordering. You sign in with your MA account, and the token is
+stored in your keyring.
 
 ## Install
 
@@ -133,6 +135,13 @@ you to restart (banner + notification). Toggle this in Preferences â†’ Desktop â
 A single-file `mass.flatpak` bundle is also attached to each [release](https://github.com/Dukko/mass/releases)
 (no automatic updates).
 
+**Sandbox access.** This Flatpak is not on Flathub because it needs `org.freedesktop.Flatpak` to run
+commands on the host: `matugen` for album-art colors, `systemctl --user` for the background player,
+and `flatpak-spawn` for updates. It writes a `mass-sendspin.service` user unit into
+`~/.config/systemd/user` and shares `~/.config/mass` with a native install. Those permissions are what
+let music keep playing after the window closes; install from this project's own repo if that trade-off
+is acceptable.
+
 <details>
 <summary>Build the Flatpak yourself</summary>
 
@@ -141,8 +150,8 @@ flatpak install --user flathub org.flatpak.Builder org.gnome.Sdk//51
 flatpak run org.flatpak.Builder --user --install --force-clean build-dir flatpak/io.github.mass_matugen.Mass.yml
 ```
 
-The Flatpak can run host commands (`flatpak-spawn --host`). It needs that to call your `matugen` for album-art
-colors and to manage the `mass-sendspin` systemd user service. It shares `~/.config/mass` with a native install.
+This local build keeps the same host access described above (matugen, `systemctl --user`, and the
+shared `~/.config/mass`).
 
 </details>
 
