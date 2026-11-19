@@ -24,6 +24,7 @@ class QueuePage(Gtk.Box):
         self._current_index: int | None = None
         self._rows: set[Gtk.Box] = set()  # the row widgets that exist (only those on screen, recycled)
         self._gen = 0  # bumps per fetch, so a slow older response can't overwrite a newer one
+        self._reload_source = 0  # pending debounced reload
 
         head = Gtk.Box(spacing=12, margin_start=28, margin_end=28, margin_top=56, margin_bottom=8)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
@@ -61,13 +62,24 @@ class QueuePage(Gtk.Box):
 
         backend.connect("queue-items-updated", lambda _b, qid: self._maybe_reload(qid))
         backend.connect("queue-updated", lambda _b, qid: self._on_queue_updated(qid))
-        backend.connect("active-player-changed", lambda *_: self.reload())
-        backend.connect("status-changed", lambda *_: self.reload())
+        backend.connect("active-player-changed", lambda *_: self._schedule_reload())
+        backend.connect("status-changed", lambda *_: self._schedule_reload())
         self.connect("map", lambda *_: self._pending and self.reload())
+
+    def _schedule_reload(self) -> None:
+        """Collapse bursts of server events into one queue fetch."""
+        if self._reload_source:
+            GLib.source_remove(self._reload_source)
+        self._reload_source = GLib.timeout_add(200, self._debounced_reload)
+
+    def _debounced_reload(self) -> bool:
+        self._reload_source = 0
+        self.reload()
+        return False
 
     def _maybe_reload(self, qid: str) -> None:
         if self.backend.active_queue and qid == self.backend.active_queue.queue_id:
-            self.reload()
+            self._schedule_reload()
 
     def _on_queue_updated(self, qid: str) -> None:
         q = self.backend.active_queue
@@ -79,7 +91,7 @@ class QueuePage(Gtk.Box):
         stale = (cur is not None and self._ids is not None and cur not in self._ids
                  and idx is not None and idx < len(self._ids))
         if q.queue_id != self._qid or stale:
-            self.reload()
+            self._schedule_reload()
         else:
             self._highlight(self._current_pos(q))
 
