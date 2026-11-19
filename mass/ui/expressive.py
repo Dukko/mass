@@ -17,7 +17,8 @@ import weakref
 import cairo
 from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk
 
-# [stiffness, damping] for unit mass, from DankMaterialShell's Theme.springSpecs
+# [stiffness, damping] for unit mass, from DankMaterialShell's Theme.springSpecs.
+# "bouncy" is Mass's own preset (not DMS), used for the art/name transitions.
 SPRINGS = {"expressive": (560.0, 37.0), "fast": (220.0, 23.0), "default": (300.0, 24.0),
            "bouncy": (300.0, 15.0)}
 
@@ -128,6 +129,32 @@ def shape_points(radii_from: list[float], radii_to: list[float], t: float, w: fl
         return [(rx + rx * r * c, ry + ry * r * s) for (c, s), r in zip(unit, radii_to, strict=False)]
     return [(rx + rx * (a + (b - a) * t) * c, ry + ry * (a + (b - a) * t) * s)
             for (c, s), a, b in zip(unit, radii_from, radii_to, strict=False)]
+
+
+def _rgba_from_css(value: str) -> Gdk.RGBA | None:
+    c = Gdk.RGBA()
+    return c if c.parse(value) else None
+
+
+def _same_rgba(a: Gdk.RGBA, b: Gdk.RGBA) -> bool:
+    return max(abs(a.red - b.red), abs(a.green - b.green), abs(a.blue - b.blue)) < 0.005
+
+
+def _fg_for(bg: Gdk.RGBA) -> Gdk.RGBA:
+    """The palette's on-* colour for a placeholder background, or a contrast fallback."""
+    from ..theme import active_palette
+
+    pal = active_palette()
+    # the tokens ShapeArt backgrounds actually use, then anything else that matches
+    for token in ("secondary_container", "primary_container", "tertiary", "tertiary_container",
+                  *(t for t in pal if not t.startswith("on_"))):
+        if not (value := pal.get(token)) or not (on := pal.get(f"on_{token}")):
+            continue
+        if (colour := _rgba_from_css(value)) and _same_rgba(colour, bg):
+            if fg := _rgba_from_css(on):
+                return fg
+    lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
+    return _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
 
 
 MASK_PAD = 2  # transparent device pixels around a shape mask, so filtering never samples a neighbour
@@ -342,9 +369,7 @@ class ShapeArt(Gtk.Widget):
             theme = Gtk.IconTheme.get_for_display(self.get_display())
             icon = theme.lookup_icon(name, None, px, self.get_scale_factor(),
                                      Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC)
-            lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
-            fg = _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
-            self._icon_cache = (key, icon, fg)
+            self._icon_cache = (key, icon, _fg_for(bg))
         _key, icon, fg = self._icon_cache
         snapshot.save()
         snapshot.translate(Graphene.Point().init((w - px) / 2, (h - px) / 2))
@@ -354,16 +379,15 @@ class ShapeArt(Gtk.Widget):
     def _draw_glyph(self, snapshot, glyph: str, w, h, px: float, bg: Gdk.RGBA) -> None:
         from gi.repository import Pango
 
-        lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
-        fg = _rgba(0, 0, 0, 0.55) if lum > 0.55 else _rgba(1, 1, 1, 0.6)
-        if self._glyph_cache is None or self._glyph_cache[0] != (glyph, px):
+        key = (glyph, px, bg.red, bg.green, bg.blue)
+        if self._glyph_cache is None or self._glyph_cache[0] != key:
             layout = self.create_pango_layout(glyph)
             desc = Pango.FontDescription.from_string("Material Symbols Rounded")
             desc.set_absolute_size(px * Pango.SCALE)
             desc.set_variations("FILL=1,wght=500,opsz=24")
             layout.set_font_description(desc)
-            self._glyph_cache = ((glyph, px), layout)
-        layout = self._glyph_cache[1]
+            self._glyph_cache = (key, layout, _fg_for(bg))
+        _key, layout, fg = self._glyph_cache
         _ink, logical = layout.get_pixel_extents()
         snapshot.save()
         snapshot.translate(Graphene.Point().init((w - logical.width) / 2 - logical.x,

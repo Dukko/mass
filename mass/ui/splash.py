@@ -12,10 +12,9 @@ from gi.repository import Adw, GLib, Graphene, Gsk, Gtk
 
 from .common import label
 from .expressive import ShapeArt, suspend_animations
+from .motion import SPLASH_FADE_MS, SPLASH_MORPH_MS
 
 SHAPES = ("cookie9", "sunny", "clover", "cookie4", "burst", "squircle")
-MORPH_EVERY_MS = 750
-FADE_MS = 320
 
 
 class SplashMark(ShapeArt):
@@ -110,7 +109,7 @@ class Splash(Gtk.Box):
     def _start(self) -> None:
         self.mark.set_spinning(0.9)
         if not self._timer and self._fade is None:
-            self._timer = GLib.timeout_add(MORPH_EVERY_MS, self._next_shape)
+            self._timer = GLib.timeout_add(SPLASH_MORPH_MS, self._next_shape)
 
     def _stop(self) -> None:
         self.mark.set_spinning(0.0)
@@ -148,7 +147,7 @@ class Splash(Gtk.Box):
         self.set_can_target(False)  # clicks go through while it fades
         self._stop_morphing()  # no new shape mid-fade; the mark just keeps turning
         target = Adw.CallbackAnimationTarget.new(self._set_alpha)
-        self._fade = Adw.TimedAnimation.new(self, 1.0, 0.0, FADE_MS, target)
+        self._fade = Adw.TimedAnimation.new(self, 1.0, 0.0, SPLASH_FADE_MS, target)
         self._fade.set_easing(Adw.Easing.EASE_OUT_CUBIC)
         self._fade.connect("done", lambda *_: self._on_faded())
         self._fade.play()

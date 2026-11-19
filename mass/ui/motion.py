@@ -17,6 +17,12 @@ from gi.repository import Adw, GLib, Graphene, Gtk
 
 from .expressive import SPRINGS
 
+# Non-spring timings (ms), shared by CSS and Adw animations.
+COLOR_FADE_MS = 300
+LYRIC_SCROLL_MS = 450
+SPLASH_MORPH_MS = 750
+SPLASH_FADE_MS = 320
+
 
 def spring_params(preset: str = "default") -> Adw.SpringParams:
     k, c = SPRINGS[preset]

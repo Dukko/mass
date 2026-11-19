@@ -8,6 +8,7 @@ import re
 from gi.repository import Adw, Gtk
 
 from .common import label
+from .motion import LYRIC_SCROLL_MS
 
 _TAG = re.compile(r"\[(\d+):(\d+(?:[.:]\d+)?)\]")
 LEAD = 0.25  # show a line slightly before it is sung
@@ -101,7 +102,7 @@ class LyricsView(Gtk.ScrolledWindow):
         if not animate:
             adj.set_value(target)
             return
-        self._anim = Adw.TimedAnimation.new(self, adj.get_value(), target, 450,
+        self._anim = Adw.TimedAnimation.new(self, adj.get_value(), target, LYRIC_SCROLL_MS,
                                             Adw.CallbackAnimationTarget.new(adj.set_value))
         self._anim.set_easing(Adw.Easing.EASE_OUT_CUBIC)
         self._anim.play()

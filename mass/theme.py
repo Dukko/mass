@@ -37,6 +37,13 @@ _EMPTY_MATUGEN_CFG = CACHE_DIR / "matugen-empty.toml"
 
 Palette = dict[str, str]  # token -> "#rrggbb"
 
+_active_palette: Palette = {}
+
+
+def active_palette() -> Palette:
+    """The palette currently applied (empty in Plain Adwaita mode)."""
+    return _active_palette
+
 
 def _prune_art_cache() -> None:
     """Keep only the most recent artwork palettes, so the cache doesn't grow forever."""
@@ -246,7 +253,9 @@ class ThemeManager(GObject.Object):
             self._style.set_color_scheme(Adw.ColorScheme.FORCE_DARK if want_dark else Adw.ColorScheme.FORCE_LIGHT)
 
     def _apply(self, palette: Palette, source: str) -> None:
+        global _active_palette
         self.palette, self.source = palette, source
+        _active_palette = palette or {}
         css = (build_css(palette) if palette else "") + "\n" + translucency_css(
             palette, self.config.transparency, self.config.blur)
         if css == getattr(self, "_css", None):
