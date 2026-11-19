@@ -93,8 +93,7 @@ class Backend(GObject.Object):
     async def stop(self) -> None:
         if self._runner:
             self._runner.cancel()
-        if self.client:
-            await self.client.disconnect()
+            await asyncio.gather(self._runner, return_exceptions=True)
         if self._session:
             await self._session.close()
 
@@ -138,11 +137,15 @@ class Backend(GObject.Object):
             client = MusicAssistantClient(self.config.server_url, session, token=self._token)
             ready = asyncio.Event()
             listen = asyncio.ensure_future(client.start_listening(ready))
+            ready_wait = asyncio.ensure_future(ready.wait())
             try:
-                done, _ = await asyncio.wait(
-                    {listen, asyncio.ensure_future(ready.wait())},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                try:
+                    done, _ = await asyncio.wait(
+                        {listen, ready_wait},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    ready_wait.cancel()
                 if listen in done:
                     listen.result()  # raises the connect error
                     raise CannotConnect(Exception("connection closed"))
@@ -158,19 +161,32 @@ class Backend(GObject.Object):
                 raise CannotConnect(Exception("connection lost"))
             except asyncio.CancelledError:
                 listen.cancel()
+                await self._disconnect(client)
                 raise
             except (AuthenticationFailed, AuthenticationRequired) as err:
                 log.warning("Auth failed: %s", err)
-                self.client = None
+                self._drop(client)
                 self._set_status(Status.AUTH_REQUIRED, "Token rejected, sign in again")
                 return
             except Exception as err:  # noqa: BLE001 - keep reconnecting on anything
                 log.info("Disconnected (%s), retrying in %.0fs", err, delay)
-                self.client = None
+                self._drop(client)
                 self._set_status(Status.DISCONNECTED, str(err) or type(err).__name__)
                 listen.cancel()
+                await self._disconnect(client)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
+
+    def _drop(self, client: MusicAssistantClient) -> None:
+        if self.client is client:
+            self.client = None
+
+    async def _disconnect(self, client: MusicAssistantClient) -> None:
+        self._drop(client)
+        try:
+            await client.disconnect()
+        except Exception as err:  # noqa: BLE001 - best-effort cleanup of a dead connection
+            log.debug("client disconnect failed: %s", err)
 
     # ------------------------------------------------------------------ events
 
