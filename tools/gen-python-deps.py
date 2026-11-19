@@ -44,17 +44,25 @@ def split_filename(filename: str) -> tuple[str, str]:
 
 
 def arch_wheel(filename: str, release: dict[str, dict], arch: str) -> str | None:
-    """The same build of a wheel for `arch`, even when the manylinux tags differ."""
+    """The same build of a wheel for `arch`, even when the manylinux tags differ.
+
+    Prefers the exact platform tag, then manylinux (the GNOME runtime is glibc).
+    """
+    exact = filename.replace("x86_64", arch)
+    if exact in release:
+        return exact
     parts = filename[:-4].split("-")
     prefix, py, abi = "-".join(parts[:-3]), parts[-3], parts[-2]
+    candidates = []
     for name in release:
         if not name.endswith(".whl"):
             continue
         cand = name[:-4].split("-")
         if (len(cand) >= 5 and "-".join(cand[:-3]) == prefix and cand[-3] == py
                 and cand[-2] == abi and "linux" in cand[-1] and f"_{arch}" in cand[-1]):
-            return name
-    return None
+            candidates.append(name)
+    manylinux = [n for n in candidates if "manylinux" in n]
+    return (manylinux or candidates or [None])[0]
 
 
 def sdist(release: dict[str, dict]) -> str | None:
