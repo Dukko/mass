@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 from gi.repository import Gio, GLib
-from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.enums import PlaybackState, PlayerFeature, RepeatMode
 
 from . import APP_ID, APP_NAME
 from .config import CACHE_DIR
@@ -124,6 +124,14 @@ class MprisServer:
         if queue:
             loop = {RepeatMode.ONE: "Track", RepeatMode.ALL: "Playlist"}.get(queue.repeat_mode, "None")
         has_item = bool(queue and queue.current_item) or bool(player and player.current_media)
+
+        def has_feature(f: PlayerFeature) -> bool:
+            return bool(player and f in (player.supported_features or ()))
+
+        if queue:
+            can_seek = bool(queue.current_item and queue.current_item.duration)
+        else:
+            can_seek = has_feature(PlayerFeature.SEEK) and bool(player and player.current_media and player.current_media.duration)
         return {
             ROOT_IFACE: {
                 "CanQuit": GLib.Variant("b", True),
@@ -141,14 +149,14 @@ class MprisServer:
                 "Shuffle": GLib.Variant("b", bool(queue and queue.shuffle_enabled)),
                 "Metadata": GLib.Variant("a{sv}", self._metadata()),
                 "Volume": GLib.Variant("d", ((player.volume_level or 0) / 100) if player else 0.0),
-                "Position": GLib.Variant("x", int(b.elapsed(queue) * 1_000_000) if queue else 0),
+                "Position": GLib.Variant("x", int(b.elapsed(queue) * 1_000_000) if player else 0),
                 "MinimumRate": GLib.Variant("d", 1.0),
                 "MaximumRate": GLib.Variant("d", 1.0),
-                "CanGoNext": GLib.Variant("b", connected and queue is not None),
-                "CanGoPrevious": GLib.Variant("b", connected and queue is not None),
+                "CanGoNext": GLib.Variant("b", connected and (queue is not None or has_feature(PlayerFeature.NEXT_PREVIOUS))),
+                "CanGoPrevious": GLib.Variant("b", connected and (queue is not None or has_feature(PlayerFeature.NEXT_PREVIOUS))),
                 "CanPlay": GLib.Variant("b", connected and has_item),
                 "CanPause": GLib.Variant("b", connected and has_item),
-                "CanSeek": GLib.Variant("b", connected and bool(queue and queue.current_item and queue.current_item.duration)),
+                "CanSeek": GLib.Variant("b", connected and can_seek),
                 "CanControl": GLib.Variant("b", connected),
             },
         }

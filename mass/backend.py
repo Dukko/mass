@@ -62,6 +62,7 @@ class Backend(GObject.Object):
         self.status_detail = ""
         self._session: aiohttp.ClientSession | None = None
         self._runner: asyncio.Task | None = None
+        self._tasks: set[asyncio.Future] = set()
         self._token: str | None = None
         self._image_cache: dict[str, bytes] = {}
         self._image_failed: dict[str, float] = {}  # url -> monotonic time to retry after
@@ -334,8 +335,10 @@ class Backend(GObject.Object):
     def run(self, coro) -> None:
         """Fire-and-forget a command, logging failures."""
         task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
 
         def done(t: asyncio.Task) -> None:
+            self._tasks.discard(t)
             if not t.cancelled() and (err := t.exception()):
                 log.error("command failed: %s", err)
 
@@ -351,29 +354,45 @@ class Backend(GObject.Object):
         elif (p := self.active_player) and self.client:
             self.run(self.client.players.play_pause(p.player_id))
 
+    def _player_id(self) -> str | None:
+        p = self.active_player
+        return p.player_id if p else None
+
     def play(self) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.play(qid))
+        elif (pid := self._player_id()) and self.client:
+            self.run(self.client.players.play(pid))
 
     def pause(self) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.pause(qid))
+        elif (pid := self._player_id()) and self.client:
+            self.run(self.client.players.pause(pid))
 
     def stop_playback(self) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.stop(qid))
+        elif (pid := self._player_id()) and self.client:
+            self.run(self.client.players.stop(pid))
 
     def next(self) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.next(qid))
+        elif (pid := self._player_id()) and self.client:
+            self.run(self.client.players.next_track(pid))
 
     def previous(self) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.previous(qid))
+        elif (pid := self._player_id()) and self.client:
+            self.run(self.client.players.previous_track(pid))
 
     def seek(self, seconds: float) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.seek(qid, int(seconds)))
+        elif (pid := self._player_id()) and self.client:
+            self.run(self.client.players.seek(pid, int(seconds)))
 
     def set_shuffle(self, enabled: bool) -> None:
         if (qid := self._qid()) and self.client:
