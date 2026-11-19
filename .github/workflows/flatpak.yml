@@ -183,9 +183,11 @@ jobs:
           cp -a sites/mass-site-x86_64/. site/
           for d in objects refs; do
             mkdir -p "site/repo/$d"
-            cp -a -n "sites/mass-site-aarch64/repo/$d/." "site/repo/$d/"
+            cp -a --update=none "sites/mass-site-aarch64/repo/$d/." "site/repo/$d/"
           done
-          cp -n sites/mass-site-aarch64/mass-aarch64.flatpak site/ || true
+          # upload-artifact drops empty directories, but build-update-repo wants this one
+          mkdir -p site/repo/refs/remotes
+          cp --update=none sites/mass-site-aarch64/mass-aarch64.flatpak site/ || true
           SIGN=(); [ -n "$GPG_ID" ] && SIGN=(--gpg-sign="$GPG_ID")
           flatpak build-update-repo --generate-static-deltas --prune "${SIGN[@]}" \
             --title=Mass --default-branch="$BRANCH" site/repo
