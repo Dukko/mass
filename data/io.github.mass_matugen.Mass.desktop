@@ -3,7 +3,7 @@ Type=Application
 Name=Mass
 GenericName=Music Player
 Comment=Music Assistant player with matugen theming
-Exec=mass %U
+Exec=mass
 Icon=io.github.mass_matugen.Mass
 Terminal=false
 Categories=AudioVideo;Audio;Player;GTK;
@@ -15,12 +15,12 @@ Actions=PlayPause;Next;Previous;
 
 [Desktop Action PlayPause]
 Name=Play/Pause
-Exec=gapplication action io.github.mass_matugen.Mass play-pause
+Exec=mass --play-pause
 
 [Desktop Action Next]
 Name=Next Track
-Exec=gapplication action io.github.mass_matugen.Mass next
+Exec=mass --next
 
 [Desktop Action Previous]
 Name=Previous Track
-Exec=gapplication action io.github.mass_matugen.Mass previous
+Exec=mass --previous

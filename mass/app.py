@@ -22,6 +22,7 @@ from music_assistant_models.enums import PlaybackState
 log = logging.getLogger(__name__)
 
 BACKEND_STOP_TIMEOUT = 3
+MEDIA_OPTIONS = ("play-pause", "next", "previous")
 
 
 class MassApp(Adw.Application):
@@ -33,6 +34,9 @@ class MassApp(Adw.Application):
                          flags=flags | Gio.ApplicationFlags.NON_UNIQUE if self._shot else flags)
         self.add_main_option("background", ord("b"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
                              "Start without showing the window", None)
+        for name in MEDIA_OPTIONS:
+            self.add_main_option(name, 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
+                                 f"Run the {name} action (starts Mass if needed)", None)
         self.config = Config.load()
         self.window = None
         self.backend: Backend | None = None
@@ -83,9 +87,39 @@ class MassApp(Adw.Application):
 
     def do_command_line(self, cmd) -> int:
         opts = cmd.get_options_dict().end().unpack()
+        # Desktop actions run `mass --play-pause` etc. so they also work when Mass is not
+        # running: GApplication forwards the options to the primary instance (or this one).
+        if media := next((name for name in MEDIA_OPTIONS if opts.get(name)), None):
+            self._media_action(media)
+            return 0
         if not opts.get("background") or cmd.get_is_remote():
             self.activate()
         return 0
+
+    def _media_action(self, name: str) -> None:
+        """Run a media action now, or once a cold start has connected to the server."""
+        if self.backend.connected:
+            self.activate_action(name, None)
+            return
+
+        attempts = 0
+
+        def retry() -> bool:
+            nonlocal attempts
+            if self.backend.connected:
+                self.activate_action(name, None)
+                return False
+            if self.backend.status == "auth-required":
+                self.activate()  # show the login instead of failing silently
+                return False
+            if attempts >= 150:  # ~30 s
+                log.warning("not running %s: no server connection", name)
+                self.activate()
+                return False
+            attempts += 1
+            return True
+
+        GLib.timeout_add(200, retry)
 
     def do_activate(self) -> None:
         self.window.present()
