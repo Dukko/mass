@@ -32,9 +32,20 @@ log = logging.getLogger(__name__)
 APP_COLORS = CONFIG_DIR / "colors.json"
 DMS_COLORS = HOST_CACHE / "dms" / "dms-colors.json"
 ART_DIR = CACHE_DIR / "art"
+ART_CACHE_MAX = 200  # palette files kept; older ones are cheap to regenerate
 _EMPTY_MATUGEN_CFG = CACHE_DIR / "matugen-empty.toml"
 
 Palette = dict[str, str]  # token -> "#rrggbb"
+
+
+def _prune_art_cache() -> None:
+    """Keep only the most recent artwork palettes, so the cache doesn't grow forever."""
+    try:
+        files = sorted(ART_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[ART_CACHE_MAX:]:
+            old.unlink(missing_ok=True)
+    except OSError as err:
+        log.debug("could not prune %s: %s", ART_DIR, err)
 
 
 def _parse_palette_file(path: Path) -> tuple[str | None, dict[str, Palette]] | None:
@@ -290,6 +301,7 @@ class ThemeManager(GObject.Object):
             if not ok or k != self._art_key or not out:
                 return
             cached.write_text(out)
+            _prune_art_cache()
             if parsed := _parse_palette_file(cached):
                 self._art_palettes, self._art_palette_key = parsed[1], k
                 self.reload()
