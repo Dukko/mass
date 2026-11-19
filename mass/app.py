@@ -21,6 +21,8 @@ from music_assistant_models.enums import PlaybackState
 
 log = logging.getLogger(__name__)
 
+BACKEND_STOP_TIMEOUT = 3
+
 
 class MassApp(Adw.Application):
     def __init__(self) -> None:
@@ -36,6 +38,7 @@ class MassApp(Adw.Application):
         self.backend: Backend | None = None
         self._held = False
         self._last_track: str | None = None
+        self._quit_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -120,12 +123,28 @@ class MassApp(Adw.Application):
         self.mpris.stop()
         self.tray.stop()
         self.endpoint.shutdown()
-        try:
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(self.backend.stop()) if not loop.is_running() else None
-        except Exception:  # noqa: BLE001
-            pass
         Adw.Application.do_shutdown(self)
+
+    def quit(self) -> None:
+        """Close the server connection, then quit.
+
+        The asyncio loop is the running GLib main loop, but it stops being iterated once
+        do_shutdown starts, so the connection has to be closed before the real quit.
+        """
+        if self.backend is None:
+            Adw.Application.quit(self)
+            return
+        if self._quit_task:
+            return
+
+        async def stop_then_quit() -> None:
+            try:
+                await asyncio.wait_for(self.backend.stop(), BACKEND_STOP_TIMEOUT)
+            except Exception as err:  # noqa: BLE001
+                log.warning("backend did not stop cleanly: %r", err)
+            Adw.Application.quit(self)
+
+        self._quit_task = asyncio.ensure_future(stop_then_quit())
 
     def _on_close(self, win) -> bool:
         if self.config.run_in_background:
