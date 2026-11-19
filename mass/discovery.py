@@ -18,6 +18,12 @@ class DiscoveredServer:
     version: str
 
 
+def _url_for(base_url: str | None, host: str, port: int | None) -> str:
+    """Server URL from mDNS, adding the port when base_url leaves it out."""
+    base = base_url or f"http://{host}"
+    return base if base.count(":") >= 2 else f"{base}:{port}"
+
+
 async def discover(timeout: float = 3.0) -> list[DiscoveredServer]:
     found: dict[str, DiscoveredServer] = {}
     pending: set[asyncio.Task] = set()
@@ -36,9 +42,7 @@ async def discover(timeout: float = 3.0) -> list[DiscoveredServer]:
         host = (v4 or addrs or [None])[0]
         if not host:
             return
-        base = props.get("base_url") or f"http://{host}"
-        # base_url omits the port when it's served through the default webserver port
-        url = base if base.count(":") >= 2 else f"{base}:{info.port}"
+        url = _url_for(props.get("base_url"), host, info.port)
         found[props.get("server_id", name)] = DiscoveredServer(
             name=props.get("name", name.split(".")[0]),
             url=url,

@@ -15,9 +15,16 @@ dependencies = [
 ]
 # PyGObject, GTK4, libadwaita and libsecret come from the system (pacman).
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.17,<0.18"]
+
 [project.scripts]
 mass = "mass.__main__:main"
 mass-sendspin = "mass.sendspin_shim:main"
 
 [tool.setuptools.packages.find]
 include = ["mass*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

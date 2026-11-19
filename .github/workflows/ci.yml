@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: System packages for PyGObject
+        # PyGObject is built against the distro python and needs the typelibs at import time
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-venv python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-secret-1
+
+      - name: Python deps
+        run: |
+          python3 -m venv --system-site-packages .ci-venv
+          .ci-venv/bin/pip install -q --upgrade pip
+          .ci-venv/bin/pip install -q pytest 'ruff>=0.17,<0.18' aiohttp music-assistant-client zeroconf
+
+      - name: Lint
+        run: .ci-venv/bin/ruff check --select F,B mass tests
+
+      - name: Test
+        run: .ci-venv/bin/python -m pytest -q
