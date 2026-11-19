@@ -400,11 +400,11 @@ class DSPDialog:
             b = Gtk.Button(icon_name=icon, tooltip_text=tip, valign=Gtk.Align.CENTER,
                            sensitive=0 <= idx + delta < n)
             b.add_css_class("flat")
-            b.connect("clicked", lambda *_, dl=delta: self._move(idx, dl))
+            b.connect("clicked", lambda *_, dl=delta: self._move(f, dl))
             row.add_suffix(b)
         rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove", valign=Gtk.Align.CENTER)
         rm.add_css_class("flat")
-        rm.connect("clicked", lambda *_: self._edit(lambda: self.dsp["filters"].pop(idx), rebuild=True))
+        rm.connect("clicked", lambda *_: self._remove(self.dsp["filters"], f))
         row.add_suffix(rm)
         row.add_suffix(sw)
 
@@ -432,7 +432,7 @@ class DSPDialog:
         sw.connect("notify::active", lambda s, _p: self._edit(lambda: band.__setitem__("enabled", s.get_active())))
         rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove band", valign=Gtk.Align.CENTER)
         rm.add_css_class("flat")
-        rm.connect("clicked", lambda *_: self._edit(lambda: f["bands"].pop(bi), rebuild=True))
+        rm.connect("clicked", lambda *_: self._remove(f["bands"], band))
         br.add_suffix(rm)
         br.add_suffix(sw)
         for key, val in band.items():
@@ -497,11 +497,19 @@ class DSPDialog:
             flt.bands = [M.ParametricEQBand(frequency=fq) for fq in (100.0, 1000.0, 8000.0)]
         self._edit(lambda: self.dsp.setdefault("filters", []).append(flt.to_dict()), rebuild=True)
 
-    def _move(self, idx: int, delta: int) -> None:
+    @staticmethod
+    def _index_of(items: list[dict], item: dict) -> int | None:
+        return next((i for i, x in enumerate(items) if x is item), None)
+
+    def _move(self, f: dict, delta: int) -> None:
         fl = self.dsp["filters"]
-        j = idx + delta
-        if 0 <= j < len(fl):
-            self._edit(lambda: fl.insert(j, fl.pop(idx)), rebuild=True)
+        i = self._index_of(fl, f)
+        if i is not None and 0 <= i + delta < len(fl):
+            self._edit(lambda: fl.insert(i + delta, fl.pop(i)), rebuild=True)
+
+    def _remove(self, items: list[dict], item: dict) -> None:
+        if (i := self._index_of(items, item)) is not None:
+            self._edit(lambda: items.pop(i), rebuild=True)
 
     def _edit(self, fn, rebuild: bool = False) -> None:
         if fn:
