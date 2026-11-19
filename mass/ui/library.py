@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from gi.repository import Adw, Gdk, Gio, Gtk
 from music_assistant_models.enums import MediaType, QueueOption, SortDirection, SortField
@@ -23,6 +24,7 @@ from .expressive import Sym, sym_button
 from .motion import pop_in
 
 PAGE = 100
+RETRY_COOLDOWN = 5.0
 log = logging.getLogger(__name__)
 
 # artist page album groups, in display order
@@ -68,6 +70,8 @@ class MediaGrid(Gtk.ScrolledWindow):
         self._exhausted = False
         self._loading = False
         self._loaded_once = False
+        self._generation = 0
+        self._retry_after = 0.0
 
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self._setup)
@@ -120,8 +124,11 @@ class MediaGrid(Gtk.ScrolledWindow):
         sub.set_label(subtitle_for(item))
 
     def reset(self) -> None:
+        self._generation += 1
         self.store.remove_all()
         self._offset, self._exhausted, self._loaded_once = 0, False, False
+        self._loading = False
+        self._retry_after = 0.0
         if self.get_mapped():
             self.load_more()
 
@@ -132,17 +139,23 @@ class MediaGrid(Gtk.ScrolledWindow):
     def load_more(self) -> None:
         if self._loading or self._exhausted or not self.backend.connected:
             return
+        if time.monotonic() < self._retry_after:
+            return
         self._loading = True
         self._loaded_once = True
+        generation = self._generation
 
         async def go():
             try:
                 items = await self.fetch(self._offset, PAGE)
             except Exception:
-                self._exhausted = True  # don't hammer the server on every scroll event
+                if generation == self._generation:
+                    self._loading = False
+                    self._retry_after = time.monotonic() + RETRY_COOLDOWN
                 raise
-            finally:
-                self._loading = False
+            if generation != self._generation:
+                return
+            self._loading = False
             self._offset += len(items)
             self._exhausted = len(items) < PAGE
             self.store.splice(self.store.get_n_items(), 0, [ItemObject(i) for i in items])
