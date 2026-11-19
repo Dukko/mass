@@ -67,7 +67,7 @@ class MassApp(Adw.Application):
         if self.config.tray and not self._shot:
             self.tray.start()
         if self.config.endpoint_enabled and not self._shot:
-            self.endpoint.apply()
+            self.backend.run(self.endpoint.apply())
         self.backend.start()
         if not self._shot:
             self.updater.start()

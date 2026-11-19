@@ -178,7 +178,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
             cfg.endpoint_audio_device = dev.get_text().strip() or "pipewire"
             cfg.endpoint_hardware_volume = hw.get_active()
             cfg.save()
-            app.endpoint.apply()
+            app.backend.run(app.endpoint.apply())
 
         en.connect("notify::active", apply)
         hw.connect("notify::active", apply)

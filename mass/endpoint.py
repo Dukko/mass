@@ -10,6 +10,7 @@ Its own MPRIS is disabled; the app's MPRIS server already covers it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
 import shutil
@@ -60,6 +61,8 @@ class Endpoint(GObject.Object):
         self.mode = "none"  # systemd | child | none
         self.detail = ""
         self._proc: Gio.Subprocess | None = None
+        self._applying = False
+        self._reapply = False
 
     def args(self) -> list[str]:
         c = self.config
@@ -115,25 +118,54 @@ class Endpoint(GObject.Object):
         ok, _ = self._systemctl("cat", UNIT)
         return ok
 
-    def apply(self) -> None:
-        """Start, restart or stop the endpoint to match the config."""
-        if not self.config.endpoint_enabled:
-            self.stop()
+    async def apply(self) -> None:
+        """Start, restart or stop the endpoint to match the config.
+
+        The systemctl work runs in a thread; a call made while one is in flight
+        is folded into a single re-run so the last config wins.
+        """
+        if self._applying:
+            self._reapply = True
             return
+        self._applying = True
+        try:
+            while True:
+                self._reapply = False
+                await self._apply_once()
+                if not self._reapply:
+                    return
+        finally:
+            self._applying = False
+
+    async def _apply_once(self) -> None:
+        if not self.config.endpoint_enabled:
+            await self.stop()
+            return
+        try:
+            has_unit = await asyncio.to_thread(self._prepare_unit)
+        except OSError as err:
+            self._set("error", "none", str(err))
+            return
+        if not has_unit:
+            self._start_child()
+            return
+        self._stop_child()
+        ok, out = await asyncio.to_thread(self._restart_unit)
+        self._set("running" if ok else "error", "systemd", "" if ok else out)
+
+    def _prepare_unit(self) -> bool:
         self._write_env()
         if IN_FLATPAK:
             self._install_flatpak_unit()
-        if self.has_unit():
-            self._stop_child()
-            self._systemctl("enable", UNIT)  # so it also comes up at login
-            ok, out = self._systemctl("restart", UNIT)
-            self._set("running" if ok else "error", "systemd", "" if ok else out)
-            return
-        self._start_child()
+        return self.has_unit()
 
-    def stop(self) -> None:
-        if self.has_unit():
-            self._systemctl("disable", "--now", UNIT)
+    def _restart_unit(self) -> tuple[bool, str]:
+        self._systemctl("enable", UNIT)  # so it also comes up at login
+        return self._systemctl("restart", UNIT)
+
+    async def stop(self) -> None:
+        if await asyncio.to_thread(self.has_unit):
+            await asyncio.to_thread(self._systemctl, "disable", "--now", UNIT)
         self._stop_child()
         self._set("stopped", "none")
 
