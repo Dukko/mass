@@ -103,13 +103,22 @@ class SignalPath(Gtk.Box):
         if subtitle:
             text.append(label(subtitle, "sp-row-sub", ellipsize=False, wrap=True))
         row.append(text)
-        if tip:
-            info = Sym("info", 18)
-            info.add_css_class("sp-info")
-            info.set_valign(Gtk.Align.CENTER)
-            info.set_tooltip_text(tip)
-            row.append(info)
-        self.append(row)
+        if not tip:
+            self.append(row)
+            return
+        # the info button expands the explanation under the row (a tooltip alone needs hover)
+        info = Gtk.ToggleButton(valign=Gtk.Align.CENTER, tooltip_text="What's this?")
+        for c in ("m3", "icon", "flat", "sp-info"):
+            info.add_css_class(c)
+        info.set_child(Sym("info", 18))
+        more = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=200)
+        more.set_child(label(tip, "sp-tip", ellipsize=False, wrap=True, max_width_chars=38))
+        info.connect("toggled", lambda b: more.set_reveal_child(b.get_active()))
+        row.append(info)
+        block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        block.append(row)
+        block.append(more)
+        self.append(block)
 
     def update(self, backend) -> bool:
         """Rebuild from the active queue's current item; False when there's nothing to show."""

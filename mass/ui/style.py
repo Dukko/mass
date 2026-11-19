@@ -455,7 +455,13 @@ CSS += f"""
 }}
 .mass .signal-path .sp-row-title {{ font-weight: 700; }}
 .mass .signal-path .sp-row-sub {{ font-size: 12px; color: {v('on-surface-variant')}; }}
-.mass .signal-path .sp-info {{ color: {v('on-surface-variant')}; }}
+.mass .signal-path .sp-info {{ color: {v('on-surface-variant')}; min-width: 32px; min-height: 32px; padding: 0; }}
+.mass .signal-path .sp-info:checked {{ color: {v('primary')}; }}
+.mass .signal-path .sp-tip {{
+  /* continues the rail, text lined up under the row title */
+  font-size: 13px; color: {v('on-surface-variant')};
+  margin-left: 4px; padding: 0 0 10px 48px; border-left: 2px solid {v('outline-variant')};
+}}
 .mass .signal-path .sp-chip {{
   font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
   background: {v('tertiary-container')}; color: {v('on-tertiary-container')};
