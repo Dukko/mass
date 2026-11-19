@@ -32,6 +32,17 @@ def queue(qid):
     return q
 
 
+def test_supports_compares_server_schema():
+    b = make_backend()
+    assert not b.supports(34)  # client without server_info yet
+    b.client.server_info = SimpleNamespace(schema_version=35)
+    assert b.supports(34)
+    assert b.supports(35)
+    assert not b.supports(36)
+    b.client = None
+    assert not b.supports(28)
+
+
 def test_queue_for_uses_leader_source_or_player_id():
     leader = player("leader", active_source="q-source")
     q_source = queue("q-source")

@@ -36,6 +36,12 @@ FAVORITABLE = {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLA
 IMAGE_RETRY_AFTER = 300  # seconds before retrying an image that failed to load
 IMAGE_CACHE_MAX = 400  # covers kept decoded in memory; oldest used is dropped first
 
+# Server schemas that introduced optional commands (checked against server_info.schema_version).
+SLEEP_TIMER_SCHEMA = 34  # players/sleep_timer/*
+SOUND_EFFECTS_SCHEMA = 35  # music/sound_effects
+OVERLAY_SCHEMA = 35  # player_queues/overlay
+ANNOUNCEMENT_SCHEMA = 28  # players/cmd/play_announcement (older than our minimum)
+
 class Status:
     IDLE = "idle"
     CONNECTING = "connecting"
@@ -262,6 +268,11 @@ class Backend(GObject.Object):
     @property
     def active_queue(self) -> PlayerQueue | None:
         return self.queue_for(self.active_player)
+
+    def supports(self, schema: int) -> bool:
+        """Whether the connected server is new enough for an optional command."""
+        info = getattr(self.client, "server_info", None) if self.client else None
+        return info is not None and info.schema_version >= schema
 
     def is_relevant(self, object_id: str) -> bool:
         """Whether an event object id affects the active player/queue."""
@@ -495,6 +506,8 @@ class Backend(GObject.Object):
         self.queue_cmd("crossfade", crossfade_enabled=on)
 
     def set_overlay(self, source: str | None) -> None:
+        if not self.supports(OVERLAY_SCHEMA):
+            return
         if source:
             self.queue_cmd("overlay", enabled=True, source=source)
         else:
@@ -504,9 +517,11 @@ class Backend(GObject.Object):
         self.queue_cmd("save_as_playlist", name=name)
 
     async def sound_effects(self) -> list[dict]:
-        if self._sound_effects is None and self.client:
+        if (self._sound_effects is None and self.client
+                and self.supports(SOUND_EFFECTS_SCHEMA)):
             try:
-                self._sound_effects = await self.client.send_command("music/sound_effects") or []
+                self._sound_effects = await self.client.send_command(
+                    "music/sound_effects", require_schema=SOUND_EFFECTS_SCHEMA) or []
             except Exception as err:  # noqa: BLE001
                 log.debug("no sound effects: %s", err)
                 self._sound_effects = []
@@ -515,26 +530,31 @@ class Backend(GObject.Object):
     async def sleep_timer(self) -> float | None:
         """Unix timestamp the active player's sleep timer fires at, if any."""
         p = self.active_player
-        if not (p and self.client):
+        if not (p and self.client and self.supports(SLEEP_TIMER_SCHEMA)):
             return None
         try:
-            return await self.client.send_command("players/sleep_timer/get", player_id=p.player_id)
+            return await self.client.send_command(
+                "players/sleep_timer/get", require_schema=SLEEP_TIMER_SCHEMA, player_id=p.player_id)
         except Exception:  # noqa: BLE001
             return None
 
     def set_sleep_timer(self, minutes: int) -> None:
-        if not ((p := self.active_player) and self.client):
+        if not ((p := self.active_player) and self.client and self.supports(SLEEP_TIMER_SCHEMA)):
             return
         if minutes > 0:
-            self.run(self.client.send_command("players/sleep_timer/set", player_id=p.player_id,
-                                              seconds=minutes * 60))
+            self.run(self.client.send_command(
+                "players/sleep_timer/set", require_schema=SLEEP_TIMER_SCHEMA,
+                player_id=p.player_id, seconds=minutes * 60))
         else:
-            self.run(self.client.send_command("players/sleep_timer/clear", player_id=p.player_id))
+            self.run(self.client.send_command(
+                "players/sleep_timer/clear", require_schema=SLEEP_TIMER_SCHEMA, player_id=p.player_id))
 
     def announce(self, message: str) -> None:
-        if (p := self.active_player) and self.client and message.strip():
-            self.run(self.client.send_command("players/cmd/play_announcement", player_id=p.player_id,
-                                              message=message.strip()))
+        if ((p := self.active_player) and self.client and message.strip()
+                and self.supports(ANNOUNCEMENT_SCHEMA)):
+            self.run(self.client.send_command(
+                "players/cmd/play_announcement", require_schema=ANNOUNCEMENT_SCHEMA,
+                player_id=p.player_id, message=message.strip()))
 
     async def lyrics_for_current(self) -> tuple[str, str | None, str | None]:
         """(key, plain, lrc) for whatever is playing; key identifies the track."""

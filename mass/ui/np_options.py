@@ -11,6 +11,7 @@ import time
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from ..backend import ANNOUNCEMENT_SCHEMA, OVERLAY_SCHEMA, SLEEP_TIMER_SCHEMA
 from .common import label
 from .expressive import Sym
 from .player_settings import DSPDialog, PlayerSettingsDialog
@@ -117,6 +118,7 @@ class NowPlayingOptions:
             (btn.add_css_class if on else btn.remove_css_class)("on")
             btn.sym.set_fill(on)
             btn.set_sensitive(q is not None)
+        self.sleep.set_visible(self.backend.supports(SLEEP_TIMER_SCHEMA))
         qual = audio_quality(self.backend)
         self.badge.set_visible(qual is not None)
         if qual:
@@ -242,20 +244,23 @@ class NowPlayingOptions:
         main = Gio.Menu()
         main.append("Stop playback", "np.stop")
 
-        overlay = Gio.Menu()
-        self.act_overlay.set_state(GLib.Variant("s", (q.overlay_source or "") if q and q.overlay_enabled else ""))
-        overlay.append_item(_item("Off", "np.overlay", ""))
-        sub = overlay  # filled async the first time
+        if b.supports(OVERLAY_SCHEMA):
+            overlay = Gio.Menu()
+            self.act_overlay.set_state(
+                GLib.Variant("s", (q.overlay_source or "") if q and q.overlay_enabled else ""))
+            overlay.append_item(_item("Off", "np.overlay", ""))
+            sub = overlay  # filled async the first time
 
-        async def fill_effects():
-            for fx in await b.sound_effects():
-                item = Gio.MenuItem.new(fx.get("name", "?"), None)
-                item.set_action_and_target_value("np.overlay", GLib.Variant("s", fx["uri"]))
-                sub.append_item(item)
+            async def fill_effects():
+                for fx in await b.sound_effects():
+                    item = Gio.MenuItem.new(fx.get("name", "?"), None)
+                    item.set_action_and_target_value("np.overlay", GLib.Variant("s", fx["uri"]))
+                    sub.append_item(item)
 
-        b.run(fill_effects())
-        main.append_submenu("Audio overlay", overlay)
-        main.append("Play announcement…", "np.announce")
+            b.run(fill_effects())
+            main.append_submenu("Audio overlay", overlay)
+        if b.supports(ANNOUNCEMENT_SCHEMA):
+            main.append("Play announcement…", "np.announce")
 
         transfer = Gio.Menu()
         for other in b.players():
