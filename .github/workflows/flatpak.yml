@@ -21,7 +21,15 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
 
@@ -60,7 +68,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.local/share/flatpak
-          key: flatpak-sdk-gnome-${{ steps.rt.outputs.v }}  # saved once per runtime version
+          key: flatpak-sdk-gnome-${{ steps.rt.outputs.v }}-${{ matrix.arch }}
 
       - name: Import signing key
         id: gpg
@@ -75,8 +83,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .flatpak-builder
-          key: flatpak-builder-${{ hashFiles('flatpak/*.yml', 'flatpak/*.json') }}
-          restore-keys: flatpak-builder-
+          key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('flatpak/*.yml', 'flatpak/*.json') }}
+          restore-keys: flatpak-builder-${{ matrix.arch }}-
 
       - name: Build
         env:
@@ -89,7 +97,7 @@ jobs:
             build-dir flatpak/$APP_ID.yml
           flatpak build-update-repo --generate-static-deltas --prune "${SIGN[@]}" \
             --title=Mass --default-branch="$BRANCH" site/repo
-          flatpak build-bundle site/repo mass.flatpak $APP_ID "$BRANCH" \
+          flatpak build-bundle site/repo "mass-${{ matrix.arch }}.flatpak" $APP_ID "$BRANCH" \
             --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
       - name: Write .flatpakrepo / .flatpakref
@@ -122,19 +130,19 @@ jobs:
           GPGKey=$KEY
           EOR
           sed -i 's/^ *//' site/mass.flatpakrepo site/mass.flatpakref
-          cp mass.flatpak site/
+          cp "mass-${{ matrix.arch }}.flatpak" site/
           touch site/.nojekyll
           printf '<!doctype html><meta charset=utf-8><title>Mass</title><h1>Mass Flatpak repo</h1><pre>flatpak install --user %s/mass.flatpakref</pre>' "$URL" > site/index.html
 
       - uses: actions/upload-artifact@v7
         with:
-          name: mass-flatpak
-          path: mass.flatpak
-
-      - uses: actions/upload-pages-artifact@v5
-        if: github.event_name != 'pull_request'
-        with:
+          name: mass-site-${{ matrix.arch }}
           path: site
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mass-bundle-${{ matrix.arch }}
+          path: mass-${{ matrix.arch }}.flatpak
 
   publish:
     needs: build
@@ -148,6 +156,44 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - name: Install flatpak
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mass-site-*
+          path: sites
+
+      - name: Import signing key
+        id: gpg
+        env:
+          KEY: ${{ secrets.FLATPAK_GPG_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then echo "id=" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "$KEY" | gpg --batch --import
+          echo "id=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')" >> "$GITHUB_OUTPUT"
+
+      - name: Merge both architectures into one repo
+        env:
+          GPG_ID: ${{ steps.gpg.outputs.id }}
+        run: |
+          mkdir -p site
+          cp -a sites/mass-site-x86_64/. site/
+          for d in objects refs; do
+            mkdir -p "site/repo/$d"
+            cp -a -n "sites/mass-site-aarch64/repo/$d/." "site/repo/$d/"
+          done
+          cp -n sites/mass-site-aarch64/mass-aarch64.flatpak site/ || true
+          SIGN=(); [ -n "$GPG_ID" ] && SIGN=(--gpg-sign="$GPG_ID")
+          flatpak build-update-repo --generate-static-deltas --prune "${SIGN[@]}" \
+            --title=Mass --default-branch="$BRANCH" site/repo
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
       - id: deploy
         uses: actions/deploy-pages@v5
 
@@ -160,9 +206,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: mass-flatpak
+          pattern: mass-bundle-*
+          path: bundles
+          merge-multiple: true
 
-      - name: Attach bundle to release
+      - name: Attach bundles to release
         uses: softprops/action-gh-release@v3
         with:
-          files: mass.flatpak
+          files: bundles/*.flatpak

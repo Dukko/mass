@@ -16,7 +16,6 @@ from gi.repository import GLib, Gtk, Graphene
 
 os.environ["MASS_SCREENSHOT"] = "1"   # separate instance, no services
 sys.path.insert(0, os.getcwd())
-from mass import APP_ID
 from mass.app import MassApp
 
 OUT = sys.argv[1]

@@ -33,7 +33,7 @@ jobs:
           .ci-venv/bin/pip install -q pytest 'ruff>=0.17,<0.18' aiohttp music-assistant-client zeroconf
 
       - name: Lint
-        run: .ci-venv/bin/ruff check --select F,B mass tests
+        run: .ci-venv/bin/ruff check --select F,B mass tests tools
 
       - name: Test
         run: .ci-venv/bin/python -m pytest -q
