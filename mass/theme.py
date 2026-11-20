@@ -136,11 +136,11 @@ _ADW_SURFACES = ("window-bg-color", "view-bg-color", "headerbar-bg-color", "head
 
 
 def translucency_css(p: Palette, transparency: int, blur: bool) -> str:
-    """Fade the main window's surfaces; popovers and dialogs stay opaque.
+    """Fade the main window's surfaces; popovers, dialogs and the mini player stay opaque.
 
-    Popovers are their own Wayland surfaces with no blur, and dialogs float over
-    content, so both get the opaque values back. Stacked panels compound their
-    alpha, which keeps higher elevations more solid.
+    Popovers are their own Wayland surfaces with no blur, and dialogs and the mini
+    player float over content, so all get the opaque values back. Stacked panels
+    compound their alpha, which keeps higher elevations more solid.
     """
     if transparency <= 0:
         return ""
@@ -158,8 +158,8 @@ def translucency_css(p: Palette, transparency: int, blur: bool) -> str:
         # the compositor picks the strength (niri: the `blur {}` config section)
         faded.append("  backdrop-filter: blur(24px);")
     restored = [f"  {k}: {v};" for k, v in opaque.items()]
-    return "\n".join(["window.mass {", *faded, "}",
-                      "window.mass popover, window.mass dialog {", *restored, "}"])
+    floating = "window.mass popover, window.mass dialog, window.mass .mini-player"
+    return "\n".join(["window.mass {", *faded, "}", f"{floating} {{", *restored, "}"])
 
 
 class ThemeManager(GObject.Object):
