@@ -102,7 +102,9 @@ class Splash(Gtk.Box):
         # the backdrop is a plain color with the fade applied to its alpha, and only the small inner
         # box gets an opacity layer, instead of rendering the whole window-sized splash offscreen
         c = self.get_color()
-        c.alpha *= self._alpha
+        # The window may be translucent, but the splash has to hide the pages behind it; only
+        # the fade may change its alpha.
+        c.alpha = self._alpha
         snapshot.append_color(c, Graphene.Rect().init(0, 0, self.get_width(), self.get_height()))
         Gtk.Box.do_snapshot(self, snapshot)
 
