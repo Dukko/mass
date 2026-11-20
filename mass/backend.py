@@ -35,6 +35,15 @@ FAVORITABLE = {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLA
                MediaType.AUDIOBOOK, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
 IMAGE_RETRY_AFTER = 300  # seconds before retrying an image that failed to load
 IMAGE_CACHE_MAX = 400  # covers kept decoded in memory; oldest used is dropped first
+IMAGE_PROXY_SIZES = (0, 80, 160, 256, 512, 1024)  # the only sizes the server's proxy accepts
+
+
+def _proxy_size(size: int) -> int:
+    """Round a requested cover size up to one the server's image proxy supports."""
+    if size <= 0:
+        return 0
+    return next((s for s in IMAGE_PROXY_SIZES[1:] if s >= size), IMAGE_PROXY_SIZES[-1])
+
 
 # Server schemas that introduced optional commands (checked against server_info.schema_version).
 SLEEP_TIMER_SCHEMA = 34  # players/sleep_timer/*
@@ -324,11 +333,15 @@ class Backend(GObject.Object):
             img = self.client.music.get_media_item_image(item)
         if img is None:
             return None
+        # server_info.base_url can omit the webserver port; the configured URL has it
+        base = (self.config.server_url or self.client.server_info.base_url).rstrip("/")
+        size = _proxy_size(size)
+        if img.proxy_id:
+            # Prefer the server's proxy: it has the image cached, honours size, and is one
+            # authenticated connection instead of many slow third-party CDN requests.
+            return f"{base}/imageproxy/{img.proxy_id}?size={size}"
         if img.remotely_accessible:
             return img.path
-        base = self.client.server_info.base_url
-        if img.proxy_id:
-            return f"{base}/imageproxy/{img.proxy_id}?size={size}"
         enc = urllib.parse.quote(urllib.parse.quote(img.path))
         return f"{base}/imageproxy?path={enc}&provider={img.provider}&size={size}"
 

@@ -137,6 +137,10 @@ class Splash(Gtk.Box):
 
     def _on_faded(self) -> None:
         self.set_visible(False)
+        # Pages were warmed up hidden behind the splash; covers may have arrived while their
+        # widgets were unmapped, so the queued draws were dropped. Repaint everything now.
+        if root := self.get_root():
+            root.queue_draw()
         self._release_pages()
 
     def dismiss(self) -> None:

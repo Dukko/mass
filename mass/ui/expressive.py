@@ -222,11 +222,13 @@ class ShapeArt(Gtk.Widget):
         if tex is self.texture:
             return
         self.texture = tex
-        if animate and tex is not None:
+        if animate and tex is not None and self.get_mapped() and not _suspended:
             self._fade.jump(0.0)
             self._fade.set_target(1.0)
             self._ensure_tick()
         else:
+            # Art that arrives under the startup splash (or on a hidden page) has no visible
+            # fade to play: jump straight in so the first paint after reveal has it.
             self._fade.jump(1.0)
         self.queue_draw()
 
@@ -302,6 +304,9 @@ class ShapeArt(Gtk.Widget):
 
     def do_map(self) -> None:
         Gtk.Widget.do_map(self)
+        # A texture/fade may have finished while the page was hidden (startup warm-up); draws
+        # queued on an unmapped widget are dropped, so repaint once we are visible again.
+        self.queue_draw()
         if self.spin_speed or not self._morph.settled or not self._fade.settled:
             self._ensure_tick()
 
