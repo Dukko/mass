@@ -63,6 +63,18 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.3" date="2026-11-20">
+      <description>
+        <ul>
+          <li>The mini player and splash screen stay opaque when window transparency is on</li>
+          <li>Cover art shows on the home page right after startup, and covers that fail to load are retried</li>
+          <li>Media keys and desktop actions start Mass when it isn't running</li>
+          <li>The tray icon is found in installed icon themes</li>
+          <li>Up next no longer reloads repeatedly during bursts of server events</li>
+          <li>Flatpak builds for aarch64</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.2" date="2026-11-19">
       <description>
         <ul>
