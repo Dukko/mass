@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk
 
-from .common import ArtImage, ItemObject, artists_str, fmt_time, label
+from music_assistant_models.enums import MediaType
+
+from .common import ArtImage, ItemObject, artists_str, fmt_time, label, open_add_to_playlist
 from .dj import AI_ICON, DJ_SHAPE, dj_icon, dj_segment, host_name
 from .expressive import ShapeArt, Sym, sym_button
 from .motion import after_motion
@@ -225,8 +227,12 @@ class QueuePage(Gtk.Box):
                          cb=lambda: box.item and self.backend.move_queue_item_next(box.item.queue_item_id))
         rm = sym_button("delete", "Remove",
                         cb=lambda: box.item and self.backend.delete_queue_item(box.item.queue_item_id))
+        to_playlist = sym_button("playlist_add", "Add to playlist",
+                                 cb=lambda: box.item and open_add_to_playlist(box, self.backend, [box.item.media_item]))
+        box.append(to_playlist)
         box.append(nxt)
         box.append(rm)
+        box.to_playlist = to_playlist
         box.item = None
         box.pos = None
         box.is_dj = False
@@ -257,6 +263,7 @@ class QueuePage(Gtk.Box):
             sub.set_wrap(False)
         dur.set_label(fmt_time(it.duration) if it.duration else "")
         box.is_dj = bool(seg)
+        box.to_playlist.set_visible(getattr(mi, "media_type", None) == MediaType.TRACK)
         n = self.store.get_n_items()
         for cls, on in (("current", pos == self._current_index), ("dj-row", bool(seg)),
                         ("first", pos == 0), ("last", pos == n - 1),

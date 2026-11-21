@@ -590,6 +590,8 @@ _HAS_SYMBOLS: bool | None = None
 
 # Material Symbols ligature -> fallback freedesktop symbolic icon
 SYMBOL_FALLBACKS = {
+    "playlist_add": "list-add-symbolic",
+    "playlist_remove": "list-remove-symbolic",
     "play_arrow": "media-playback-start-symbolic",
     "pause": "media-playback-pause-symbolic",
     "skip_next": "media-skip-forward-symbolic",

@@ -6,13 +6,15 @@ import asyncio
 import logging
 import time
 
-from gi.repository import Adw, Gdk, Gio, Gtk
-from music_assistant_models.enums import MediaType, QueueOption, SortDirection, SortField
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from music_assistant_models.enums import EventType, MediaType, QueueOption, SortDirection, SortField
+from music_assistant_models.errors import MediaNotFoundError
 
 from .common import (
     ArtImage,
     ItemObject,
     artists_str,
+    ask_text,
     attach_media_actions,
     fmt_time,
     label,
@@ -25,6 +27,8 @@ from .motion import pop_in
 
 PAGE = 100
 RETRY_COOLDOWN = 5.0
+CHANGE_DEBOUNCE_MS = 300
+REMOVAL_FALLBACK_MS = 5000
 log = logging.getLogger(__name__)
 
 # artist page album groups, in display order
@@ -204,7 +208,8 @@ class DetailPage(Adw.NavigationPage):
         btns.append(play)
         btns.append(sym_button("shuffle", "Shuffle", ("m3", "icon", "large", "tonal"), cb=self._shuffle))
         btns.append(sym_button("radio", "Start radio", ("m3", "icon", "large", "tonal"), action="media.radio"))
-        more = Gtk.MenuButton(menu_model=media_menu_model(), valign=Gtk.Align.CENTER)
+        self._menu = media_menu_model()
+        more = Gtk.MenuButton(menu_model=self._menu, valign=Gtk.Align.CENTER)
         more.set_child(Sym("more_vert", 24))
         more.add_css_class("flat")
         more.add_css_class("circular")
@@ -216,7 +221,164 @@ class DetailPage(Adw.NavigationPage):
 
         self.spinner = Adw.Spinner(height_request=40, margin_top=24)
         self.col.append(self.spinner)
+
+        self._tracks_slot: Gtk.Box | None = None
+        self._remove_buttons: list[Gtk.Button] = []
+        self._removing = False
+        self._removal_fallback = 0
+        self._tracks_gen = 0
+        self._change_source = 0
+        self._changed_id = 0
+        if item.media_type == MediaType.PLAYLIST:
+            self._changed_id = backend.connect("media-item-changed", self._on_media_changed)
+            self.connect("notify::root", self._on_root_changed)
         backend.run(self._load())
+
+    def _on_root_changed(self, *_) -> None:
+        """A popped page is unparented: stop listening for changes."""
+        if self.get_root() is not None:
+            return
+        if self._changed_id:
+            self.backend.disconnect(self._changed_id)
+            self._changed_id = 0
+        if self._change_source:
+            GLib.source_remove(self._change_source)
+            self._change_source = 0
+        self._cancel_removal_fallback()
+
+    def _on_media_changed(self, _b, _event: str, uri: str) -> None:
+        if uri != self.item.uri:
+            return
+        if self._change_source:
+            GLib.source_remove(self._change_source)
+        self._change_source = GLib.timeout_add(CHANGE_DEBOUNCE_MS, self._debounced_refresh)
+
+    def _debounced_refresh(self) -> bool:
+        self._change_source = 0
+        self.backend.run(self._refresh())
+        return False
+
+    async def _refresh(self) -> None:
+        """Re-read the playlist after a server-side change; leave the page if it no longer exists."""
+        it = self.item
+        try:
+            full = await self.backend.client.music.get_item(it.media_type, it.item_id, it.provider)
+        except MediaNotFoundError:
+            self._pop_if_visible()
+            return
+        except Exception as err:  # noqa: BLE001
+            log.debug("could not refresh %s: %s", it.uri, err)
+            return
+        self.item = full
+        self.subtitle.set_label(subtitle_for(full))
+        await self._reload_tracks()
+
+    def _pop_if_visible(self) -> None:
+        nav = self.get_ancestor(Adw.NavigationView)
+        if nav is not None and nav.get_visible_page() is self:
+            nav.pop()
+
+    def _toast(self, text: str) -> None:
+        root = self.get_root()
+        if hasattr(root, "toast"):
+            root.toast(text)
+
+    def _enable_playlist_editing(self) -> None:
+        group = Gio.SimpleActionGroup()
+        delete = Gio.SimpleAction.new("delete", None)
+        delete.connect("activate", lambda *_: self._confirm_delete())
+        group.add_action(delete)
+        self.insert_action_group("page", group)
+        section = Gio.Menu()
+        section.append("Delete playlist", "page.delete")
+        self._menu.append_section(None, section)
+
+    def _confirm_delete(self) -> None:
+        dlg = Adw.AlertDialog(heading="Delete playlist?",
+                              body=f"“{self.item.name}” will be removed from your library. This can't be undone.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("delete", "Delete")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "delete" and self._delete())
+        dlg.present(self.get_root())
+
+    def _delete(self) -> None:
+        name = self.item.name
+
+        def done() -> None:
+            self._toast(f"Deleted {name}")
+            self._pop_if_visible()
+
+        self.backend.delete_playlist(self.item, done, lambda err: self._toast(f"Could not delete {name}: {err}"))
+
+    def _remove_track(self, position: int) -> None:
+        """Queue removal of the track at a server playlist position.
+
+        The server only queues the removal, so the buttons stay off until the playlist's change event
+        rebuilds the list; the fallback timer covers a missed event.
+        """
+        if self._removing:
+            return
+        self._set_removing(True)
+
+        def done() -> None:
+            self._cancel_removal_fallback()
+            self._removal_fallback = GLib.timeout_add(REMOVAL_FALLBACK_MS, self._removal_fallback_fired)
+
+        def fail(err: Exception) -> None:
+            self._set_removing(False)
+            self._toast(f"Could not remove track: {err}")
+
+        self.backend.remove_from_playlist(self.item, [position], done, fail)
+
+    def _removal_fallback_fired(self) -> bool:
+        self._removal_fallback = 0
+        self.backend.run(self._reload_tracks())
+        return False
+
+    def _cancel_removal_fallback(self) -> None:
+        if self._removal_fallback:
+            GLib.source_remove(self._removal_fallback)
+            self._removal_fallback = 0
+
+    def _set_removing(self, on: bool) -> None:
+        self._removing = on
+        if not on:
+            self._cancel_removal_fallback()
+        for b in self._remove_buttons:
+            b.set_sensitive(not on)
+
+    def _can_edit(self) -> bool:
+        """Remove and delete take a library id, so provider copies of an editable playlist stay read-only."""
+        return bool(getattr(self.item, "is_editable", False)) and self.item.provider == "library"
+
+    async def _fetch_tracks(self) -> list[tuple]:
+        if self._can_edit():
+            return await self.backend.playlist_tracks(self.item)
+        tracks = await self.backend.client.music.get_playlist_tracks(self.item.item_id, self.item.provider)
+        return [(t, None) for t in tracks]
+
+    async def _reload_tracks(self) -> None:
+        self._tracks_gen += 1
+        gen = self._tracks_gen
+        try:
+            pairs = await self._fetch_tracks()
+        except Exception as err:  # noqa: BLE001
+            log.warning("could not reload playlist tracks: %s", err)
+            self._set_removing(False)
+            return
+        if gen == self._tracks_gen and self._tracks_slot is not None:
+            self._show_playlist_tracks(pairs)
+
+    def _show_playlist_tracks(self, pairs: list[tuple]) -> None:
+        self._clear(self._tracks_slot)
+        self._remove_buttons = []
+        # a skipped (unresolvable) track leaves a gap in the server's positions; row order is only the fallback
+        positions = [pos or i for i, (_t, pos) in enumerate(pairs, start=1)] if self._can_edit() else None
+        self._add_tracks([t for t, _p in pairs], parent=self._tracks_slot, positions=positions)
+        self._set_removing(False)
 
     def _shuffle(self) -> None:
         b = self.backend
@@ -283,7 +445,10 @@ class DetailPage(Adw.NavigationPage):
                 self._add_tracks(await music.get_album_tracks(it.item_id, it.provider), numbered=True)
                 self._about(it)
             elif it.media_type == MediaType.PLAYLIST:
-                self._add_tracks(await music.get_playlist_tracks(it.item_id, it.provider))
+                if self._can_edit():
+                    self._enable_playlist_editing()
+                self._tracks_slot = self._slot()
+                self._show_playlist_tracks(await self._fetch_tracks())
             elif it.media_type == MediaType.ARTIST:
                 await self._load_artist(it)
         finally:
@@ -366,9 +531,10 @@ class DetailPage(Adw.NavigationPage):
     def _section(self, title: str, parent: Gtk.Box | None = None) -> None:
         (parent or self.col).append(label(title, "section-title", margin_top=12))
 
-    def _add_tracks(self, tracks, numbered: bool = False, parent: Gtk.Box | None = None) -> None:
+    def _add_tracks(self, tracks, numbered: bool = False, parent: Gtk.Box | None = None,
+                    positions: list[int] | None = None) -> None:
         lb = m3_list()
-        for t in tracks:
+        for i, t in enumerate(tracks):
             lead = None
             if numbered:
                 lead = label(str(getattr(t, "track_number", "") or ""), "title-m", "on-variant", "numeric",
@@ -376,6 +542,11 @@ class DetailPage(Adw.NavigationPage):
             row = media_row(self.backend, t, artists_str(t), art=not numbered, leading=lead,
                             trailing_text=fmt_time(t.duration) if t.duration else "", play_button=False,
                             on_activate=self._play_from)
+            if positions is not None:
+                rm = sym_button("playlist_remove", "Remove from playlist", cb=lambda p=positions[i]: self._remove_track(p))
+                rm.set_sensitive(not self._removing)
+                self._remove_buttons.append(rm)
+                row.get_child().append(rm)
             lb.append(row)
         (parent or self.col).append(pop_in(lb, dy=20, scale=0.98, preset="expressive"))
 
@@ -399,6 +570,12 @@ class LibraryView(Gtk.Box):
 
         self.head = Gtk.Box(spacing=16, margin_start=28, margin_end=28, margin_top=56, margin_bottom=12)
         self.head.append(label("Library", "display-m", hexpand=True, ellipsize=False))
+        self.new_playlist = sym_button("playlist_add", "New playlist", ("m3", "icon", "tonal"), cb=self._new_playlist)
+        self.new_playlist.set_halign(Gtk.Align.START)
+        self.new_playlist.set_visible(False)
+        self.head.append(self.new_playlist)
+        self._playlists_grid: MediaGrid | None = None
+        self._playlists_source = 0
         self.seg = Gtk.Box(valign=Gtk.Align.CENTER)
         self.seg.add_css_class("seg")
         self.head.append(self.seg)
@@ -413,8 +590,10 @@ class LibraryView(Gtk.Box):
             self.stack.add_named(grid, name)
             btn = Gtk.ToggleButton(label=title, group=first)
             first = first or btn
-            btn.connect("toggled", lambda b: b.get_active() and self.stack.set_visible_child_name(name))
+            btn.connect("toggled", lambda b: b.get_active() and self._show_tab(name))
             self.seg.append(btn)
+            if name == "playlists":
+                self._playlists_grid = grid
 
         S = lambda f, d, legacy: library_sort(backend, f, d, legacy)  # noqa: E731
         add("albums", "Albums", lambda o, n: music().get_library_albums(
@@ -427,6 +606,43 @@ class LibraryView(Gtk.Box):
             limit=n, offset=o, **S(SortField.SORT_NAME, SortDirection.ASC, "sort_name")), 130, True)
         first.set_active(True)
         backend.connect("status-changed", self._on_status)
+        backend.connect("media-item-changed", self._on_media_changed)
+
+    def _show_tab(self, name: str) -> None:
+        self.stack.set_visible_child_name(name)
+        self.new_playlist.set_visible(name == "playlists")
+
+    def _new_playlist(self) -> None:
+        ask_text(self, "New playlist", "", "Playlist name", "Create", self._create_playlist)
+
+    def _create_playlist(self, text: str) -> None:
+        name = text.strip()
+        if not name:
+            return
+
+        async def go() -> None:
+            try:
+                await self.backend.create_playlist(name)
+            except Exception as err:  # noqa: BLE001
+                log.error("creating playlist failed: %s", err)
+                root = self.get_root()
+                if hasattr(root, "toast"):
+                    root.toast(f"Could not create {name}: {err}")
+
+        self.backend.run(go())
+
+    def _on_media_changed(self, _b, event: str, uri: str) -> None:
+        # updates are frequent (favourites, metadata syncs) and don't change which playlists exist
+        if "://playlist/" not in uri or event not in (EventType.MEDIA_ITEM_ADDED.value, EventType.MEDIA_ITEM_DELETED.value):
+            return
+        if self._playlists_source:
+            GLib.source_remove(self._playlists_source)
+        self._playlists_source = GLib.timeout_add(CHANGE_DEBOUNCE_MS, self._reset_playlists)
+
+    def _reset_playlists(self) -> bool:
+        self._playlists_source = 0
+        self._playlists_grid.reset()
+        return False
 
     def set_narrow(self, narrow: bool) -> None:
         self.head.set_orientation(Gtk.Orientation.VERTICAL if narrow else Gtk.Orientation.HORIZONTAL)

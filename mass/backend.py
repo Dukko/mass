@@ -22,7 +22,7 @@ from music_assistant_client.exceptions import CannotConnect
 from music_assistant_models.errors import AuthenticationFailed, AuthenticationRequired
 from music_assistant_models.enums import EventType, MediaType, PlaybackState, RepeatMode
 from music_assistant_models.event import MassEvent
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import Playlist, media_from_dict
 from music_assistant_models.player import Player
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -72,6 +72,7 @@ class Backend(GObject.Object):
         "queue-time-updated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "active-player-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "ai-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "media-item-changed": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
     }
 
     def __init__(self, config) -> None:
@@ -222,6 +223,8 @@ class Backend(GObject.Object):
             self.emit("queue-items-updated", oid)
         elif et == EventType.QUEUE_TIME_UPDATED:
             self.emit("queue-time-updated", oid)
+        elif et in (EventType.MEDIA_ITEM_ADDED, EventType.MEDIA_ITEM_UPDATED, EventType.MEDIA_ITEM_DELETED):
+            self.emit("media-item-changed", et.value, oid)
 
     # ------------------------------------------------------------------ state helpers
 
@@ -578,6 +581,44 @@ class Backend(GObject.Object):
                 await music.add_playlist_tracks(playlist.item_id, uris)
             except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
                 log.error("adding to playlist failed: %s", err)
+                on_fail(err)
+                return
+            on_done()
+
+        self.run(go())
+
+    async def playlist_tracks(self, playlist: Playlist) -> list[tuple[Any, int | None]]:
+        """Tracks with the server's own playlist positions (the typed models drop them).
+
+        The position is None when the server did not supply one.
+        """
+        raw = await self.client.send_command(
+            "music/playlists/playlist_tracks", item_id=playlist.item_id,
+            provider_instance_id_or_domain=playlist.provider, force_refresh=True)
+        return [(media_from_dict(obj), obj.get("position")) for obj in raw]
+
+    def remove_from_playlist(self, playlist: Playlist, positions: list[int], on_done: Callable[[], None],
+                             on_fail: Callable[[Exception], None]) -> None:
+        """Remove tracks by their 1-based playlist positions."""
+
+        async def go() -> None:
+            try:
+                await self.client.music.remove_playlist_tracks(playlist.item_id, tuple(positions))
+            except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
+                log.error("removing from playlist failed: %s", err)
+                on_fail(err)
+                return
+            on_done()
+
+        self.run(go())
+
+    def delete_playlist(self, playlist: Playlist, on_done: Callable[[], None],
+                        on_fail: Callable[[Exception], None]) -> None:
+        async def go() -> None:
+            try:
+                await self.client.music.remove_item_from_library(MediaType.PLAYLIST, playlist.item_id)
+            except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
+                log.error("deleting playlist failed: %s", err)
                 on_fail(err)
                 return
             on_done()
