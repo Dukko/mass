@@ -285,7 +285,8 @@ class QueuePage(Gtk.Box):
     def _move(self, src: int, insert_at: int) -> int | None:
         """Move row `src` now and tell the server; a refusal reloads the real order. Returns the new row."""
         target = move_target(src, insert_at)
-        if target is None or self._ids is None:
+        q = self.backend.active_queue
+        if target is None or self._ids is None or not self.backend.client or not q or q.queue_id != self._qid:
             return None
         final, shift = target
         item_id = self._ids[src]
@@ -295,6 +296,11 @@ class QueuePage(Gtk.Box):
         # fresh wrappers so every shifted row rebinds: a moved-but-same item keeps its stale position
         self.store.splice(lo, hi - lo + 1, [ItemObject(i) for i in items])
         self._ids.insert(final, self._ids.pop(src))
+        # discard fetches started before the move: they carry the old order
+        self._gen += 1
+        if self._reload_source:
+            GLib.source_remove(self._reload_source)
+            self._reload_source = 0
         self.backend.move_queue_item(item_id, shift, self._move_failed)
         return final
 
