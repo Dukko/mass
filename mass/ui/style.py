@@ -296,11 +296,17 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 .mass .qrow .title-m {{ font-size: 15px; }}
 .mass .qrow.dj-row .shape-art {{ color: {v('tertiary-container')}; }}
 .mass .qrow .drag-handle {{ color: {v('on-surface-variant')}; opacity: 0.55; transition: opacity {EFFECTS}; }}
-.mass listview.m3-list > row:hover > .qrow .drag-handle:not(:disabled) {{ opacity: 1; }}
-.mass .qrow .drag-handle:disabled {{ opacity: 0; }}
+.mass listview.m3-list > row:hover > .qrow .drag-handle:not(.locked) {{ opacity: 1; }}
+.mass .qrow .drag-handle.locked {{ opacity: 0; }}
 .mass .qrow.dragging {{ opacity: 0.4; }}
 .mass .qrow.drop-above {{ box-shadow: inset 0 3px 0 {v('primary')}; }}
 .mass .qrow.drop-below {{ box-shadow: inset 0 -3px 0 {v('primary')}; }}
+.mass list.m3-list > row .drag-handle {{ color: {v('on-surface-variant')}; opacity: 0.55; transition: opacity {EFFECTS}; }}
+.mass list.m3-list > row:hover .drag-handle:not(.locked) {{ opacity: 1; }}
+.mass list.m3-list > row .drag-handle.locked {{ opacity: 0; }}
+.mass list.m3-list > row.dragging {{ opacity: 0.4; }}
+.mass list.m3-list > row.drop-above {{ box-shadow: inset 0 3px 0 {v('primary')}; }}
+.mass list.m3-list > row.drop-below {{ box-shadow: inset 0 -3px 0 {v('primary')}; }}
 
 /* ------------------------------------------------------------ search */
 .mass .search-bar {{

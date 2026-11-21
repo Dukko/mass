@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk
 from music_assistant_models.enums import EventType, MediaType, QueueOption, SortDirection, SortField
 from music_assistant_models.errors import MediaNotFoundError
 
@@ -22,13 +22,17 @@ from .common import (
     media_menu_model,
     media_row,
 )
+from ..backend import PLAYLIST_MOVE_SCHEMA
 from .expressive import Sym, sym_button
 from .motion import pop_in
+from .reorder import AutoScroll, move_target, playlist_move, swallow_clicks
 
 PAGE = 100
 RETRY_COOLDOWN = 5.0
 CHANGE_DEBOUNCE_MS = 300
 REMOVAL_FALLBACK_MS = 5000
+RELOAD_RETRY_MS = 3000
+RELOAD_TRIES = 3  # failed reloads tolerated while the page waits for a fresh track list
 log = logging.getLogger(__name__)
 
 # artist page album groups, in display order
@@ -179,6 +183,7 @@ class DetailPage(Adw.NavigationPage):
         hb.add_css_class("flat-header")
         tv.add_top_bar(hb)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self._autoscroll = AutoScroll(scroller).update
         clamp = Adw.Clamp(maximum_size=980, margin_bottom=120, margin_start=20, margin_end=20)
         self.col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
         clamp.set_child(self.col)
@@ -224,7 +229,16 @@ class DetailPage(Adw.NavigationPage):
 
         self._tracks_slot: Gtk.Box | None = None
         self._remove_buttons: list[Gtk.Button] = []
-        self._removing = False
+        self._handles: list[Gtk.Widget] = []
+        self._lb: Gtk.ListBox | None = None
+        self._order: list[Gtk.ListBoxRow] = []  # editable playlist rows, top to bottom
+        self._drag_row: Gtk.ListBoxRow | None = None
+        self._drop_row: Gtk.ListBoxRow | None = None
+        self._busy = False  # a removal or move is in flight: positions can't be trusted until a fresh list is shown
+        self._retry_source = 0
+        self._reload_tries = 0
+        self._edit_accepted = False  # the server has answered the in-flight edit
+        self._changed_early = False  # the playlist's change event came before that answer
         self._removal_fallback = 0
         self._tracks_gen = 0
         self._change_source = 0
@@ -245,10 +259,13 @@ class DetailPage(Adw.NavigationPage):
             GLib.source_remove(self._change_source)
             self._change_source = 0
         self._cancel_removal_fallback()
+        self._cancel_retry()
 
     def _on_media_changed(self, _b, _event: str, uri: str) -> None:
         if uri != self.item.uri:
             return
+        if self._busy and not self._edit_accepted:
+            self._changed_early = True  # the server announces some edits before it answers the command
         if self._change_source:
             GLib.source_remove(self._change_source)
         self._change_source = GLib.timeout_add(CHANGE_DEBOUNCE_MS, self._debounced_refresh)
@@ -319,19 +336,28 @@ class DetailPage(Adw.NavigationPage):
         The server only queues the removal, so the buttons stay off until the playlist's change event
         rebuilds the list; the fallback timer covers a missed event.
         """
-        if self._removing:
+        if self._busy:
             return
-        self._set_removing(True)
-
-        def done() -> None:
-            self._cancel_removal_fallback()
-            self._removal_fallback = GLib.timeout_add(REMOVAL_FALLBACK_MS, self._removal_fallback_fired)
+        self._set_busy(True)
 
         def fail(err: Exception) -> None:
-            self._set_removing(False)
+            self._set_busy(False)
             self._toast(f"Could not remove track: {err}")
 
-        self.backend.remove_from_playlist(self.item, [position], done, fail)
+        self.backend.remove_from_playlist(self.item, [position], self._edit_done, fail)
+
+    def _edit_done(self) -> None:
+        """The server accepted an edit. Lists fetched before this point carry the old order, so discard them."""
+        self._tracks_gen += 1
+        self._edit_accepted = True
+        self._arm_fallback()
+        if self._changed_early:
+            self._changed_early = False
+            self.backend.run(self._reload_tracks())
+
+    def _arm_fallback(self) -> None:
+        self._cancel_removal_fallback()
+        self._removal_fallback = GLib.timeout_add(REMOVAL_FALLBACK_MS, self._removal_fallback_fired)
 
     def _removal_fallback_fired(self) -> bool:
         self._removal_fallback = 0
@@ -343,16 +369,155 @@ class DetailPage(Adw.NavigationPage):
             GLib.source_remove(self._removal_fallback)
             self._removal_fallback = 0
 
-    def _set_removing(self, on: bool) -> None:
-        self._removing = on
-        if not on:
+    def _cancel_retry(self) -> None:
+        if self._retry_source:
+            GLib.source_remove(self._retry_source)
+            self._retry_source = 0
+
+    def _set_busy(self, on: bool) -> None:
+        self._busy = on
+        if on:
+            self._tracks_gen += 1  # a list already being fetched predates this edit
+            self._edit_accepted = self._changed_early = False
+        else:
             self._cancel_removal_fallback()
+            self._cancel_retry()
         for b in self._remove_buttons:
             b.set_sensitive(not on)
+        # handles stay sensitive: an insensitive widget isn't picked, so a click would fall through to the row
+        for h in self._handles:
+            (h.add_css_class if on else h.remove_css_class)("locked")
+
+    def _retry_reload(self) -> bool:
+        self._retry_source = 0
+        self.backend.run(self._reload_tracks())
+        return False
+
+    def _give_up_reloading(self) -> None:
+        """No fresh list after several tries: stop editing from positions that may be wrong."""
+        for w in (*self._remove_buttons, *self._handles):
+            w.set_visible(False)
+        self._order = []
+        self._set_busy(False)
+        self._toast("Couldn’t refresh the playlist")
 
     def _can_edit(self) -> bool:
         """Remove and delete take a library id, so provider copies of an editable playlist stay read-only."""
         return bool(getattr(self.item, "is_editable", False)) and self.item.provider == "library"
+
+    def _can_reorder(self) -> bool:
+        return self._can_edit() and self.backend.supports(PLAYLIST_MOVE_SCHEMA)
+
+    # ------------------------------------------------------------------ reordering
+
+    def _move(self, src: int, insert_at: int) -> int | None:
+        """Move row `src` now and tell the server; a refusal reloads the real order. Returns the new row."""
+        if self._busy or self._lb is None:
+            return None
+        move = playlist_move([r.position for r in self._order], src, insert_at)
+        if move is None:
+            return None
+        final, from_pos, to_pos = move
+        row = self._order.pop(src)
+        self._order.insert(final, row)
+        self._lb.remove(row)
+        self._lb.insert(row, final)
+        self._set_busy(True)
+
+        def fail(_err: Exception) -> None:
+            self._toast("Couldn’t move track")
+            self.backend.run(self._reload_tracks())
+
+        self.backend.move_playlist_track(self.item, from_pos, to_pos, self._edit_done, fail)
+        return final
+
+    def _add_handle(self, row: Gtk.ListBoxRow) -> None:
+        # only the handle starts a drag, so clicks still play and the page still scrolls
+        handle = Sym("drag_indicator", 20)
+        handle.add_css_class("drag-handle")
+        handle.set_cursor_from_name("grab")
+        handle.set_tooltip_text("Drag to reorder (Alt+↑/↓)")
+        if self._busy:
+            handle.add_css_class("locked")
+        src = Gtk.DragSource(actions=Gdk.DragAction.MOVE)
+        src.connect("prepare", self._drag_prepare, row)
+        src.connect("drag-begin", self._drag_begin, row, handle)
+        src.connect("drag-end", lambda *_: self._drag_end())
+        handle.add_controller(src)
+        swallow_clicks(handle, src)
+        row.get_child().prepend(handle)
+        self._handles.append(handle)
+        drop = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
+        drop.connect("motion", self._drop_motion, row)
+        drop.connect("leave", lambda *_: self._mark_drop(None, ""))
+        drop.connect("drop", self._on_drop, row)
+        row.add_controller(drop)
+
+    def _drag_prepare(self, _src, x: float, y: float, row: Gtk.ListBoxRow) -> Gdk.ContentProvider | None:
+        if self._busy:
+            return None
+        self._drag_row = row
+        row.hot_spot = (x, y)
+        return Gdk.ContentProvider.new_for_value(str(row.position))
+
+    def _drag_begin(self, src: Gtk.DragSource, _drag, row: Gtk.ListBoxRow, handle: Gtk.Widget) -> None:
+        src.set_icon(Gtk.WidgetPaintable.new(row).get_current_image(), *self._hot_spot(row, handle))
+        row.add_css_class("dragging")
+
+    @staticmethod
+    def _hot_spot(row: Gtk.ListBoxRow, handle: Gtk.Widget) -> tuple[int, int]:
+        ok, pt = handle.compute_point(row, Graphene.Point().init(*row.hot_spot))
+        return (int(pt.x), int(pt.y)) if ok else (0, 0)
+
+    def _drag_end(self) -> None:
+        if self._drag_row is not None:
+            self._drag_row.remove_css_class("dragging")
+        self._drag_row = None
+        self._mark_drop(None, "")
+        self._autoscroll(None)
+
+    def _drop_allowed(self, row: Gtk.ListBoxRow, y: float) -> int | None:
+        """Insertion index for a drop at y on this row, or None where it can't land."""
+        if self._busy or self._drag_row not in self._order:
+            return None
+        at = row.get_index() + (1 if y > row.get_height() / 2 else 0)
+        return at if move_target(self._order.index(self._drag_row), at) else None
+
+    def _drop_motion(self, _t, _x: float, y: float, row: Gtk.ListBoxRow) -> Gdk.DragAction:
+        at = self._drop_allowed(row, y)
+        if at is None:
+            self._mark_drop(None, "")
+            return 0
+        self._mark_drop(row, "drop-below" if at > row.get_index() else "drop-above")
+        return Gdk.DragAction.MOVE
+
+    def _on_drop(self, _t, value: str, _x: float, y: float, row: Gtk.ListBoxRow) -> bool:
+        at = self._drop_allowed(row, y)
+        self._mark_drop(None, "")
+        if at is None or value != str(self._drag_row.position):
+            return False
+        self._move(self._order.index(self._drag_row), at)
+        return True
+
+    def _mark_drop(self, row: Gtk.ListBoxRow | None, cls: str) -> None:
+        if self._drop_row is not None:
+            self._drop_row.remove_css_class("drop-above")
+            self._drop_row.remove_css_class("drop-below")
+        self._drop_row = row
+        if row is not None:
+            row.add_css_class(cls)
+
+    def _on_key(self, _c, keyval: int, _code: int, state: Gdk.ModifierType) -> bool:
+        if not state & Gdk.ModifierType.ALT_MASK or keyval not in (Gdk.KEY_Up, Gdk.KEY_Down):
+            return False
+        row = self._lb.get_focus_child() if self._lb else None
+        if row not in self._order:
+            return False
+        i = self._order.index(row)
+        at = i - 1 if keyval == Gdk.KEY_Up else i + 2
+        if 0 <= at <= len(self._order) and self._move(i, at) is not None:
+            row.grab_focus()
+        return True
 
     async def _fetch_tracks(self) -> list[tuple]:
         if self._can_edit():
@@ -367,7 +532,14 @@ class DetailPage(Adw.NavigationPage):
             pairs = await self._fetch_tracks()
         except Exception as err:  # noqa: BLE001
             log.warning("could not reload playlist tracks: %s", err)
-            self._set_removing(False)
+            if gen != self._tracks_gen or not self._busy:
+                return
+            # positions are unreliable until a list arrives, so keep editing locked and try again
+            if self._reload_tries >= RELOAD_TRIES:
+                self._give_up_reloading()
+            elif not self._retry_source:
+                self._reload_tries += 1
+                self._retry_source = GLib.timeout_add(RELOAD_RETRY_MS, self._retry_reload)
             return
         if gen == self._tracks_gen and self._tracks_slot is not None:
             self._show_playlist_tracks(pairs)
@@ -375,10 +547,14 @@ class DetailPage(Adw.NavigationPage):
     def _show_playlist_tracks(self, pairs: list[tuple]) -> None:
         self._clear(self._tracks_slot)
         self._remove_buttons = []
+        self._handles = []
+        self._order = []
+        self._lb = self._drag_row = self._drop_row = None
+        self._reload_tries = 0
         # a skipped (unresolvable) track leaves a gap in the server's positions; row order is only the fallback
         positions = [pos or i for i, (_t, pos) in enumerate(pairs, start=1)] if self._can_edit() else None
         self._add_tracks([t for t, _p in pairs], parent=self._tracks_slot, positions=positions)
-        self._set_removing(False)
+        self._set_busy(False)
 
     def _shuffle(self) -> None:
         b = self.backend
@@ -544,10 +720,20 @@ class DetailPage(Adw.NavigationPage):
                             on_activate=self._play_from)
             if positions is not None:
                 rm = sym_button("playlist_remove", "Remove from playlist", cb=lambda p=positions[i]: self._remove_track(p))
-                rm.set_sensitive(not self._removing)
+                rm.set_sensitive(not self._busy)
                 self._remove_buttons.append(rm)
                 row.get_child().append(rm)
+                row.position = positions[i]
+                if self._can_reorder():
+                    self._add_handle(row)
+                self._order.append(row)
             lb.append(row)
+        if positions is not None:
+            self._lb = lb
+            if self._can_reorder():
+                keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+                keys.connect("key-pressed", self._on_key)
+                lb.add_controller(keys)
         (parent or self.col).append(pop_in(lb, dy=20, scale=0.98, preset="expressive"))
 
     def _play_from(self, track) -> None:

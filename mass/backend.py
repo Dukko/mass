@@ -53,6 +53,7 @@ SLEEP_TIMER_SCHEMA = 34  # players/sleep_timer/*
 SOUND_EFFECTS_SCHEMA = 35  # music/sound_effects
 OVERLAY_SCHEMA = 35  # player_queues/overlay
 ANNOUNCEMENT_SCHEMA = 28  # players/cmd/play_announcement (older than our minimum)
+PLAYLIST_MOVE_SCHEMA = 101  # music/playlists/move_playlist_track
 
 class Status:
     IDLE = "idle"
@@ -606,6 +607,24 @@ class Backend(GObject.Object):
                 await self.client.music.remove_playlist_tracks(playlist.item_id, tuple(positions))
             except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
                 log.error("removing from playlist failed: %s", err)
+                on_fail(err)
+                return
+            on_done()
+
+        self.run(go())
+
+    def move_playlist_track(self, playlist: Playlist, from_position: int, to_position: int,
+                            on_done: Callable[[], None], on_fail: Callable[[Exception], None]) -> None:
+        """Move a track between 1-based playlist positions; `to_position` is where it ends up."""
+        if not self.supports(PLAYLIST_MOVE_SCHEMA):
+            on_fail(RuntimeError("the server can't reorder playlists"))
+            return
+
+        async def go() -> None:
+            try:
+                await self.client.music.move_playlist_track(playlist.item_id, from_position, to_position)
+            except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
+                log.error("moving playlist track failed: %s", err)
                 on_fail(err)
                 return
             on_done()
