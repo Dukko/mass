@@ -111,7 +111,7 @@ class MediaGrid(Gtk.ScrolledWindow):
         box.add_controller(click)
         box.parts = (art, title, sub)
         box.current = None
-        attach_media_actions(box, self.backend, lambda: box.current)
+        box.refresh_actions = attach_media_actions(box, self.backend, lambda: box.current)
         li.set_child(box)
 
     def _bind(self, _f, li) -> None:
@@ -119,6 +119,7 @@ class MediaGrid(Gtk.ScrolledWindow):
         item = li.get_item().item
         art, title, sub = box.parts
         box.current = item
+        box.refresh_actions()
         art.set_item(item)
         title.set_label(item.name)
         sub.set_label(subtitle_for(item))

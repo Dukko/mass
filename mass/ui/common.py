@@ -137,8 +137,37 @@ class ItemObject(GObject.Object):
         self.item = item
 
 
-def attach_media_actions(widget: Gtk.Widget, backend, get_item) -> None:
-    """Install `media.*` actions on a widget, operating on get_item()."""
+PLAYLIST_ADDABLE = (MediaType.TRACK, MediaType.ALBUM)
+
+
+def ask_text(parent: Gtk.Widget, heading: str, body: str, placeholder: str, verb: str, cb, prefill: bool = False) -> None:
+    """Prompt for one line of text; cb(text) runs when confirmed."""
+    dlg = Adw.AlertDialog(heading=heading, body=body)
+    entry = Gtk.Entry(placeholder_text=placeholder, activates_default=True)
+    if prefill:
+        entry.set_text(placeholder)
+    dlg.set_extra_child(entry)
+    dlg.add_response("cancel", "Cancel")
+    dlg.add_response("ok", verb)
+    dlg.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dlg.set_default_response("ok")
+    dlg.connect("response", lambda _d, r: r == "ok" and cb(entry.get_text()))
+    dlg.present(parent.get_root())
+
+
+def open_add_to_playlist(widget: Gtk.Widget, backend, items: list) -> None:
+    from .dialogs import AddToPlaylistDialog  # dialogs imports this module
+
+    window = widget.get_root()
+    AddToPlaylistDialog(backend, items, window).present(window)
+
+
+def attach_media_actions(widget: Gtk.Widget, backend, get_item):
+    """Install `media.*` actions on a widget, operating on get_item().
+
+    Returns a refresh callable: call it whenever get_item() starts returning a different item
+    so item-dependent actions (add to playlist) enable or disable accordingly.
+    """
     group = Gio.SimpleActionGroup()
 
     def add(name, option, radio=False):
@@ -161,7 +190,18 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item) -> None:
     add("next", QueueOption.NEXT)
     add("add", QueueOption.ADD)
     add("radio", None, radio=True)
+
+    playlist = Gio.SimpleAction.new("playlist", None)
+    playlist.connect("activate", lambda *_: (item := get_item()) is not None and open_add_to_playlist(widget, backend, [item]))
+    group.add_action(playlist)
+
+    def refresh() -> None:
+        item = get_item()
+        playlist.set_enabled(getattr(item, "media_type", None) in PLAYLIST_ADDABLE)
+
+    refresh()
     widget.insert_action_group("media", group)
+    return refresh
 
 
 async def _play_radio(backend, item) -> None:
@@ -180,6 +220,9 @@ def media_menu_model() -> Gio.Menu:
     menu.append_section(None, sec)
     sec2 = Gio.Menu()
     sec2.append("Start radio", "media.radio")
+    to_playlist = Gio.MenuItem.new("Add to playlist…", "media.playlist")
+    to_playlist.set_attribute_value("hidden-when", GLib.Variant("s", "action-disabled"))
+    sec2.append_item(to_playlist)
     menu.append_section(None, sec2)
     return menu
 

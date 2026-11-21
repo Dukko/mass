@@ -22,6 +22,7 @@ from music_assistant_client.exceptions import CannotConnect
 from music_assistant_models.errors import AuthenticationFailed, AuthenticationRequired
 from music_assistant_models.enums import EventType, MediaType, PlaybackState, RepeatMode
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import Playlist
 from music_assistant_models.player import Player
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -35,7 +36,8 @@ log = logging.getLogger(__name__)
 FAVORITABLE = {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.RADIO,
                MediaType.AUDIOBOOK, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
 IMAGE_RETRY_AFTER = 300  # seconds before retrying an image that failed to load
-IMAGE_CACHE_MAX = 400  # covers kept decoded in memory; oldest used is dropped first
+PLAYLIST_PAGE = 500  # library playlists fetched per request
+IMAGE_CACHE_MAX = 400 # covers kept decoded in memory; oldest used is dropped first
 IMAGE_PROXY_SIZES = (0, 80, 160, 256, 512, 1024)  # the only sizes the server's proxy accepts
 
 
@@ -545,6 +547,42 @@ class Backend(GObject.Object):
 
     def save_queue_as_playlist(self, name: str) -> None:
         self.queue_cmd("save_as_playlist", name=name)
+
+    async def editable_playlists(self) -> list[Playlist]:
+        """Library playlists tracks can be added to, fetched fresh on every call."""
+        found: list[Playlist] = []
+        while True:
+            page = await self.client.music.get_library_playlists(limit=PLAYLIST_PAGE, offset=len(found))
+            found.extend(page)
+            if len(page) < PLAYLIST_PAGE:
+                break
+        return [p for p in found if p.is_editable and not p.is_dynamic]
+
+    async def create_playlist(self, name: str) -> Playlist:
+        return await self.client.music.create_playlist(name)
+
+    def add_to_playlist(self, playlist: Playlist, items: list, on_done: Callable[[], None],
+                        on_fail: Callable[[Exception], None]) -> None:
+        """Append tracks (albums are expanded to theirs) to a library playlist."""
+
+        async def go() -> None:
+            try:
+                music = self.client.music
+                uris: list[str] = []
+                for item in items:
+                    if item.media_type == MediaType.ALBUM:
+                        tracks = await music.get_album_tracks(item.item_id, item.provider)
+                        uris.extend(t.uri for t in tracks)
+                    else:
+                        uris.append(item.uri)
+                await music.add_playlist_tracks(playlist.item_id, uris)
+            except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
+                log.error("adding to playlist failed: %s", err)
+                on_fail(err)
+                return
+            on_done()
+
+        self.run(go())
 
     async def sound_effects(self) -> list[dict]:
         if (self._sound_effects is None and self.client

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import time
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Gio, GLib, Gtk
+from music_assistant_models.enums import MediaType
 
 from ..backend import ANNOUNCEMENT_SCHEMA, OVERLAY_SCHEMA, SLEEP_TIMER_SCHEMA
-from .common import label
+from .common import ask_text, label, open_add_to_playlist
 from .expressive import Sym
 from .player_settings import DSPDialog, PlayerSettingsDialog
 from .signal_path import SignalPathPopover
@@ -160,6 +161,7 @@ class NowPlayingOptions:
         add("save", lambda *_: self._ask("Save queue as playlist", "Creates a new playlist in your library",
                                          time.strftime("Queue %b %-d"), "Save", b.save_queue_as_playlist,
                                          prefill=True))
+        add("playlist", self._add_current_to_playlist)
         add("settings", self._open_settings, "s")
         self.act_wavy = add("wavy", self._on_wavy, None, GLib.Variant("b", b.config.wavy_progress))
         self.host.insert_action_group("np", group)
@@ -186,17 +188,16 @@ class NowPlayingOptions:
         (DSPDialog if what == "dsp" else PlayerSettingsDialog)(self.backend, p.player_id, self.host)
 
     def _ask(self, heading, body, placeholder, verb, cb, prefill=False) -> None:
-        dlg = Adw.AlertDialog(heading=heading, body=body)
-        entry = Gtk.Entry(placeholder_text=placeholder, activates_default=True)
-        if prefill:
-            entry.set_text(placeholder)
-        dlg.set_extra_child(entry)
-        dlg.add_response("cancel", "Cancel")
-        dlg.add_response("ok", verb)
-        dlg.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
-        dlg.set_default_response("ok")
-        dlg.connect("response", lambda _d, r: r == "ok" and cb(entry.get_text()))
-        dlg.present(self.host.get_root())
+        ask_text(self.host, heading, body, placeholder, verb, cb, prefill)
+
+    def _current_track(self):
+        q = self.backend.active_queue
+        mi = q.current_item.media_item if q and q.current_item else None
+        return mi if getattr(mi, "media_type", None) == MediaType.TRACK else None
+
+    def _add_current_to_playlist(self, *_args) -> None:
+        if (track := self._current_track()) is not None:
+            open_add_to_playlist(self.host, self.backend, [track])
 
     # ------------------------------------------------------------------ menu
 
@@ -269,6 +270,8 @@ class NowPlayingOptions:
                 item.set_action_and_target_value("np.transfer", GLib.Variant("s", other.player_id))
                 transfer.append_item(item)
         main.append_submenu("Transfer queue", transfer)
+        if self._current_track() is not None:
+            main.append("Add to playlist…", "np.playlist")
         main.append("Clear queue", "np.clear")
         main.append("Save queue as playlist…", "np.save")
 

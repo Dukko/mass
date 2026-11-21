@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from gi.repository import Adw, GLib, Gtk
 
@@ -10,6 +11,10 @@ from .. import APP_ID, APP_NAME
 from ..host import HOST_CONFIG, launch_cmd
 from ..discovery import discover
 from .. import firewall
+from .common import ask_text, label, m3_list, media_row, status_page
+from .expressive import Sym
+
+log = logging.getLogger(__name__)
 
 AUTOSTART = HOST_CONFIG / "autostart" / f"{APP_ID}.desktop"
 
@@ -92,6 +97,106 @@ class LoginDialog(Adw.Dialog):
     def _err(self, msg: str) -> None:
         self.error.set_label(msg)
         self.error.set_visible(True)
+
+
+class AddToPlaylistDialog(Adw.Dialog):
+    """Pick (or create) a library playlist to append tracks / albums to."""
+
+    def __init__(self, backend, items: list, window: Gtk.Widget) -> None:
+        super().__init__(title="Add to playlist", content_width=420, content_height=560)
+        self.backend, self.items, self.window = backend, items, window
+        self._busy = False
+        tv = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        tv.add_top_bar(header)
+        self.search = Gtk.SearchEntry(placeholder_text="Search playlists", margin_start=12, margin_end=12,
+                                      margin_bottom=8)
+        self.search.connect("search-changed", lambda *_: self.list.invalidate_filter())
+        tv.add_top_bar(self.search)
+
+        self.list = m3_list()
+        self.list.set_filter_func(self._visible)
+        new = Gtk.ListBoxRow(activatable=True)
+        new.is_new = True
+        new.on_activate = self._new_playlist
+        box = Gtk.Box(spacing=14, margin_start=12, margin_end=8, margin_top=8, margin_bottom=8)
+        box.append(Sym("playlist_add", 28))
+        box.append(label("New playlist…", "title-m", hexpand=True))
+        new.set_child(box)
+        self.list.append(new)
+
+        self.empty = status_page("view-list-symbolic", "No editable playlists",
+                                 "Create a playlist to start collecting tracks.")
+        self.empty.set_visible(False)
+        self.spinner = Adw.Spinner(height_request=40, margin_top=24)
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_start=12, margin_end=12, margin_bottom=12)
+        col.append(self.list)
+        col.append(self.empty)
+        col.append(self.spinner)
+        scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroll.set_child(col)
+        tv.set_content(scroll)
+        self.set_child(tv)
+        self.set_focus(self.search)
+        backend.run(self._load())
+
+    def _visible(self, row: Gtk.ListBoxRow) -> bool:
+        if getattr(row, "is_new", False):
+            return True
+        return self.search.get_text().strip().casefold() in (getattr(row.item, "name", "") or "").casefold()
+
+    async def _load(self) -> None:
+        try:
+            playlists = await self.backend.editable_playlists()
+        except Exception as err:  # noqa: BLE001
+            log.error("loading playlists failed: %s", err)
+            playlists = []
+            self._toast("Couldn't load playlists")
+        self.spinner.set_visible(False)
+        self.empty.set_visible(not playlists)
+        for pl in playlists:
+            self.list.append(media_row(self.backend, pl, getattr(pl, "owner", "") or "", self._add_to,
+                                       play_button=False, menu=False))
+
+    def _toast(self, text: str) -> None:
+        if hasattr(self.window, "toast"):
+            self.window.toast(text)
+
+    def _new_playlist(self) -> None:
+        ask_text(self, "New playlist", "Name the playlist; the selection is added to it", "My playlist", "Create",
+                 self._create)
+
+    def _create(self, name: str) -> None:
+        name = name.strip()
+        if not name or self._busy:
+            return
+        self._busy = True
+        self.list.set_sensitive(False)
+
+        async def go() -> None:
+            try:
+                playlist = await self.backend.create_playlist(name)
+            except Exception as err:  # noqa: BLE001
+                log.error("creating playlist failed: %s", err)
+                self._toast("Couldn’t create playlist")
+                self._busy = False
+                self.list.set_sensitive(True)
+                return
+            self._add_to(playlist, created=True)
+
+        self.backend.run(go())
+
+    def _add_to(self, playlist, created: bool = False) -> None:
+        if self._busy and not created:
+            return
+        self._busy = True
+        self.list.set_sensitive(False)
+        self.backend.add_to_playlist(
+            playlist, self.items,
+            on_done=lambda: self._toast(f"Added to {playlist.name}"),
+            on_fail=lambda _err: self._toast("Couldn't add to playlist"),
+        )
+        self.close()
 
 
 class _TranslucencyRows:
