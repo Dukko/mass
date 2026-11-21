@@ -63,6 +63,17 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.4" date="2026-11-20">
+      <description>
+        <ul>
+          <li>Drag queue tracks to reorder them, or move them with Alt+Up/Down</li>
+          <li>Add tracks and albums to a playlist from any menu, or start a new one</li>
+          <li>Remove tracks from your playlists, delete playlists and create them from Library</li>
+          <li>Reorder playlist tracks on Music Assistant 2.11 and newer</li>
+          <li>Playlist pages and the Playlists grid refresh when playlists change elsewhere</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.3" date="2026-11-20">
       <description>
         <ul>
