@@ -618,6 +618,7 @@ SYMBOL_FALLBACKS = {
     "close": "window-close-symbolic",
     "delete": "user-trash-symbolic",
     "low_priority": "go-top-symbolic",
+    "drag_indicator": "list-drag-handle-symbolic",
     "clear_all": "edit-clear-all-symbolic",
     "cast": "send-to-symbolic",
     "power_settings_new": "system-shutdown-symbolic",

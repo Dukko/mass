@@ -11,6 +11,7 @@ import logging
 import time
 import urllib.parse
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -500,6 +501,22 @@ class Backend(GObject.Object):
     def move_queue_item_next(self, item_id: str) -> None:
         if (qid := self._qid()) and self.client:
             self.run(self.client.player_queues.move_next(qid, item_id))
+
+    def move_queue_item(self, item_id: str, shift: int, on_fail: Callable[[Exception], None]) -> None:
+        """Move a queue item `shift` rows (down if positive); on_fail runs if the server refuses."""
+        if not shift:  # pos_shift=0 means "play next" to the server, not "stay put"
+            return
+        if not (qid := self._qid()) or not self.client:
+            return
+
+        async def go() -> None:
+            try:
+                await self.client.player_queues.move_item(qid, item_id, shift)
+            except Exception as err:  # noqa: BLE001 - any failure means the optimistic move must roll back
+                log.error("moving queue item failed: %s", err)
+                on_fail(err)
+
+        self.run(go())
 
     def clear_queue(self) -> None:
         if (qid := self._qid()) and self.client:
