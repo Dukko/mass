@@ -23,10 +23,12 @@ class MediaList(Gtk.ScrolledWindow):
     It scrolls itself, so it must not sit inside another scroller (the list would then be laid out in
     full and nothing would be recycled). `set_query` filters the loaded items on the client;
     a caller that filters on the server changes its own `fetch` and calls `reset()` instead.
+    `menu` may be a predicate deciding per item whether the row shows its menu button.
     """
 
     def __init__(self, backend, fetch, on_activate: Callable[[Any], None],
-                 subtitle: Callable[[Any], str] = default_subtitle, menu: bool = True,
+                 subtitle: Callable[[Any], str] = default_subtitle,
+                 menu: bool | Callable[[Any], bool] = True,
                  on_empty: Callable[[bool], None] | None = None, page: int = PAGE) -> None:
         super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self.backend, self.on_activate, self.subtitle, self.menu = backend, on_activate, subtitle, menu
@@ -65,8 +67,9 @@ class MediaList(Gtk.ScrolledWindow):
         box.append(art)
         box.append(text)
         box.append(duration)
-        if self.menu:
-            box.append(media_menu_button())
+        box.menu_button = media_menu_button() if self.menu else None
+        if box.menu_button is not None:
+            box.append(box.menu_button)
         box.parts = (art, title, sub, duration)
         box.current = None
         box.refresh_actions = attach_media_actions(box, self.backend, lambda: box.current)
@@ -78,6 +81,8 @@ class MediaList(Gtk.ScrolledWindow):
         art, title, sub, duration = box.parts
         box.current = item
         box.refresh_actions()
+        if box.menu_button is not None and callable(self.menu):
+            box.menu_button.set_visible(bool(self.menu(item)))
         art.set_item(item)
         title.set_label(getattr(item, "name", "") or "")
         sub.set_label(self.subtitle(item))

@@ -60,7 +60,8 @@ class BrowseList(Gtk.Stack):
         clamp.set_child(self.list)
         self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
         self.add_named(self.scroller, "list")
-        self.big = MediaList(backend, _no_more, self._activate, subtitle_for, menu=False)
+        self.big = MediaList(backend, _no_more, self._activate, subtitle_for,
+                          menu=lambda item: item.media_type != MediaType.FOLDER)
         self.add_named(self.big, "big")
         self.add_named(status_page("folder-symbolic", "Nothing to browse here"), "empty")
         self.error = status_page("dialog-error-symbolic", "Couldn't load this folder")
