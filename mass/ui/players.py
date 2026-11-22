@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from gi.repository import Adw, GLib, Gtk
-from music_assistant_models.enums import PlaybackState, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from .common import label
 from .expressive import Sym, sym_button
+from .group_members import GroupMembersDialog, group_candidates
 
 
 def player_symbol(p) -> str:
@@ -65,7 +66,7 @@ class PlayersView(Gtk.ScrolledWindow):
         local_id = self.endpoint.find_player_id(self.backend)
         active = self.backend.active_player
         for p in players:
-            self._sync_row(self._rows[p.player_id], p, local_id, active)
+            self._sync_row(self._rows[p.player_id], p, local_id, active, players)
         self._update()
 
     def _make_row(self, p) -> Gtk.ListBoxRow:
@@ -88,6 +89,9 @@ class PlayersView(Gtk.ScrolledWindow):
         row.sub = label("", "body-m", "on-variant")
         text.append(row.sub)
         top.append(text)
+        row.group = sym_button("speaker_group", "Group speakers", ("m3", "icon", "tonal"),
+                               cb=lambda: GroupMembersDialog(self.backend, pid).present(self.get_root()))
+        top.append(row.group)
         row.cast = sym_button("cast", "", ("m3", "icon", "tonal"), cb=lambda: self.backend.transfer_to(pid))
         top.append(row.cast)
         row.power = Gtk.Switch(valign=Gtk.Align.CENTER, tooltip_text="Power")
@@ -127,7 +131,8 @@ class PlayersView(Gtk.ScrolledWindow):
         row.set_child(outer)
         return row
 
-    def _sync_row(self, row: Gtk.ListBoxRow, p, local_id: str | None, active) -> None:
+    def _sync_row(self, row: Gtk.ListBoxRow, p, local_id: str | None, active, players: list) -> None:
+        self._sync_group_button(row, p, players)
         is_active = bool(active and active.player_id == p.player_id)
         row.set_activatable(p.available)
         row.icon.set_symbol(player_symbol(p))
@@ -148,11 +153,19 @@ class PlayersView(Gtk.ScrolledWindow):
         finally:
             row.syncing = False
 
+    @staticmethod
+    def _sync_group_button(row: Gtk.ListBoxRow, p, players: list) -> None:
+        can = PlayerFeature.SET_MEMBERS in (getattr(p, "supported_features", None) or ())
+        row.group.set_visible(can and bool(group_candidates(p, players)))
+        row.group.set_tooltip_text("Group speakers")
+
     def _update(self) -> None:
+        players = self.backend.players()
         for pid, row in self._rows.items():
             p = self.backend.get_player(pid)
             if not p:
                 continue
+            self._sync_group_button(row, p, players)
             q = self.backend.queue_for(p)
             state = q.state if q else p.playback_state
             bits = [{PlaybackState.PLAYING: "Playing", PlaybackState.PAUSED: "Paused"}.get(
@@ -163,6 +176,10 @@ class PlayersView(Gtk.ScrolledWindow):
                 bits.append(p.current_media.title)
             if p.synced_to and (leader := self.backend.get_player(p.synced_to)):
                 bits.append(f"synced to {leader.name}")
+            elif not p.synced_to and len(members := getattr(p, "group_members", None) or ()) > 1:
+                others = [m.name for mid in members if mid != pid and (m := self.backend.get_player(mid))]
+                if others:
+                    bits.append(f"with {others[0]}" + (f" +{len(others) - 1}" if len(others) > 1 else ""))
             row.sub.set_label(" · ".join(bits))
 
     def _on_activate(self, _l, row) -> None:
