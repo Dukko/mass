@@ -26,8 +26,8 @@ current album art. Shapes, springs and type come straight from the DMS design to
 <td width="50%" valign="top">
 
 ### Every player
-Browse, search and control every Music Assistant player, adjust volumes, and move a queue
-from one speaker to another.
+Browse, search and control every Music Assistant player, adjust volumes, move a queue
+from one speaker to another, and group speakers from the Players page.
 
 </td>
 </tr>
@@ -59,6 +59,38 @@ AI DJ hosts per queue, live "on air" captions and stations. Needs the server's A
 MPRIS, notifications with cover art, a tray icon (StatusNotifierItem), start on login and media
 shortcuts. The MASS menu adds sleep timer, audio overlay, announcements, autoplay, crossfade and
 save queue as playlist, all matching the Music Assistant web UI.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Library
+Tracks, Podcasts, Genres and Browse tabs next to albums, artists, playlists and radio. Each tab
+has its own search, favorites switch, sort and filters, and remembers them between launches.
+
+</td>
+<td valign="top">
+
+### Pages and menus
+Genre and podcast pages, a heart on album, playlist and artist pages, and favorite, Go to
+album / artist and Add to playlist in every media menu.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Giant playlists
+Playlists with thousands of tracks open instantly, scroll smoothly and have a "Filter tracks"
+box. Small playlists keep the drag-to-reorder editor.
+
+</td>
+<td valign="top">
+
+### Server admin, one click away
+"Open in web app" jumps to the Music Assistant pages Mass doesn't reimplement: settings,
+providers, users, statistics, party mode and smart playlists.
 
 </td>
 </tr>
@@ -115,9 +147,19 @@ save queue as playlist, all matching the Music Assistant web UI.
 
 ## Requirements
 
-A Music Assistant server (schema 28+). Library sorting uses the typed sort API from schema 86;
-older servers fall back to legacy ordering. You sign in with your MA account, and the token is
-stored in your keyring.
+A Music Assistant server (schema 28+). You sign in with your MA account, and the token is stored
+in your keyring.
+
+Everything works on older servers (Music Assistant 2.10 is schema 65); newer features simply
+stay hidden until the server supports them:
+
+| Schema | Needed for |
+|--------|------------|
+| 86 | Typed library sorting (older servers use legacy ordering) |
+| 93 | Paged playlists and podcast episodes, server-side track filter |
+| 94 | Paged Browse folders (older servers load a folder in one go) |
+| 98 | Random sort |
+| 101 | Genre and played-only filters; artist Popular, Appears on and Similar artists; lazily loaded recommendation rows |
 
 ## Install
 

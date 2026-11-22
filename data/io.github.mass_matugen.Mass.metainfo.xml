@@ -63,6 +63,19 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.0" date="2026-11-21">
+      <description>
+        <ul>
+          <li>Library search, favorites, sort and filters, saved per tab</li>
+          <li>New Tracks, Podcasts, Genres and Browse tabs, plus genre and podcast pages</li>
+          <li>Favorite hearts on album, playlist and artist pages, and favorite, Go to album and Go to artist in menus</li>
+          <li>Playlists with thousands of tracks open instantly, with a track filter</li>
+          <li>Group speakers from the Players page</li>
+          <li>Open in web app links for settings, providers, users, statistics, party mode and smart playlists</li>
+          <li>Newer Music Assistant servers unlock random sort, paged lists and more artist sections</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.4" date="2026-11-20">
       <description>
         <ul>
