@@ -20,7 +20,7 @@ from .common import (
     media_menu_model,
     media_row,
 )
-from ..backend import PLAYLIST_MOVE_SCHEMA, PLAYLIST_PAGING_SCHEMA
+from ..backend import ARTIST_EXTRAS_SCHEMA, FAVORITABLE, PLAYLIST_MOVE_SCHEMA, PLAYLIST_PAGING_SCHEMA
 from ..listing import matches_query
 from .expressive import Sym, sym_button
 from .library import CHANGE_DEBOUNCE_MS, subtitle_for
@@ -84,6 +84,11 @@ class DetailPage(Adw.NavigationPage):
         btns.append(play)
         btns.append(sym_button("shuffle", "Shuffle", ("m3", "icon", "large", "tonal"), cb=self._shuffle))
         btns.append(sym_button("radio", "Start radio", ("m3", "icon", "large", "tonal"), action="media.radio"))
+        self._fav = sym_button("favorite", "Add to favorites", ("m3", "icon", "large", "toggle"),
+                               cb=self._toggle_favorite)
+        self._fav.set_visible(False)
+        self._fav_on = self._fav_busy = self._fav_loaded = False
+        btns.append(self._fav)
         self._menu = media_menu_model()
         more = Gtk.MenuButton(menu_model=self._menu, valign=Gtk.Align.CENTER)
         more.set_child(Sym("more_vert", 24))
@@ -92,7 +97,7 @@ class DetailPage(Adw.NavigationPage):
         btns.append(more)
         info.append(btns)
         head.append(info)
-        self._refresh_actions = attach_media_actions(head, backend, lambda: self.item)
+        self._refresh_actions = attach_media_actions(head, backend, self._action_item)
         self._head = head
         self.col.append(head)
 
@@ -560,6 +565,71 @@ class DetailPage(Adw.NavigationPage):
             qid = getattr(target, "queue_id", None) or target.player_id
             b.run(b.client.player_queues.play_media(qid, self.item, option=QueueOption.REPLACE, shuffle=True))
 
+    def _show_favorite(self, on: bool) -> None:
+        (self._fav.add_css_class if on else self._fav.remove_css_class)("on")
+        self._fav.sym.set_fill(on)
+        self._fav.set_tooltip_text("Remove from favorites" if on else "Add to favorites")
+
+    def _load_favorite(self, item) -> None:
+        if item.media_type not in FAVORITABLE:
+            return
+
+        async def go() -> None:
+            on, _lib = await self.backend.favorite_state(item)
+            if self._fav_loaded or item.uri != self.item.uri:  # the menu already told us, or the page moved on
+                return
+            self._fav_loaded = True
+            self._fav_on = on
+            self._show_favorite(on)
+            self._fav.set_visible(True)
+
+        self.backend.run(go())
+
+    def _action_item(self):
+        """The item the hero menu acts on.
+
+        The menu re-reads it after changing `item.favorite`, which is the only hook that sees that
+        change, so the heart follows the flag here. Only library items carry a reliable flag;
+        provider items may say False while favorited.
+        """
+        item = self.item
+        if (not self._fav_busy and getattr(item, "provider", None) == "library" and hasattr(item, "favorite")
+                and item.media_type in FAVORITABLE and bool(item.favorite) != self._fav_on
+                and (self._fav_loaded or self._fav.get_visible())):
+            self._fav_loaded = True
+            self._fav_on = bool(item.favorite)
+            self._show_favorite(self._fav_on)
+            self._fav.set_visible(True)
+        return item
+
+    def _toggle_favorite(self) -> None:
+        if self._fav_busy:
+            return
+        item, want = self.item, not self._fav_on
+        self._fav_busy = self._fav_loaded = True
+        self._fav.set_sensitive(False)
+        self._fav_on = want
+        self._show_favorite(want)
+
+        def finish(on: bool) -> None:
+            self._fav_busy = False
+            self._fav.set_sensitive(True)
+            self._fav_on = on
+            self._show_favorite(on)
+
+        def done(_on: bool) -> None:
+            if hasattr(item, "favorite"):
+                item.favorite = want
+            finish(want)
+            if item is self.item:
+                self._refresh_actions()
+
+        def fail(_err: Exception) -> None:
+            finish(not want)
+            self._toast("Couldn’t update favorites")
+
+        self.backend.toggle_favorite(item, want, done, fail)
+
     async def _full_item(self):
         """The complete item (images, genres, bio) when we were handed a bare ItemMapping."""
         it = self.item
@@ -616,6 +686,7 @@ class DetailPage(Adw.NavigationPage):
         music = self.backend.client.music
         try:
             it = await self._full_item()
+            self._load_favorite(it)
             if it.media_type == MediaType.ALBUM:
                 self._add_tracks(await music.get_album_tracks(it.item_id, it.provider), numbered=True)
                 self._about(it)
@@ -661,9 +732,62 @@ class DetailPage(Adw.NavigationPage):
                     self._section(title, albums_slot)
                     self._album_grid(group, albums_slot)
 
+        extras = self.backend.supports(ARTIST_EXTRAS_SCHEMA)
+        appears_slot, similar_slot = (self._slot(), self._slot()) if extras else (None, None)
+
+        async def popular() -> None:
+            if extras:
+                try:
+                    top = await music.top_tracks(it.item_id, it.provider, limit=10)
+                except Exception as err:  # noqa: BLE001
+                    log.debug("top tracks of %s failed: %r", it.uri, err)
+                    top = []
+                if top:
+                    show_tracks(top)
+                    return
+            await self._stream(music.get_artist_tracks, sources, show_tracks)
+
+        async def appears_on() -> None:
+            try:
+                albums = await music.artist_appears_on(it.item_id, it.provider, limit=24)
+            except Exception as err:  # noqa: BLE001
+                log.debug("appears on of %s failed: %r", it.uri, err)
+                return
+            if albums:
+                self._section("Appears on", appears_slot)
+                self._album_grid(albums, appears_slot)
+
+        async def similar() -> None:
+            try:
+                artists = await music.similar_artists(it.item_id, it.provider, limit=16)
+            except Exception as err:  # noqa: BLE001
+                log.debug("similar artists of %s failed: %r", it.uri, err)
+                return
+            if artists:
+                self._section("Similar artists", similar_slot)
+                self._artist_grid(artists, similar_slot)
+
         self._about(it)  # bio is already here; it sits below the slots
-        await asyncio.gather(self._stream(music.get_artist_tracks, sources, show_tracks),
-                             self._stream(music.get_artist_albums, sources, show_albums))
+        jobs = [popular(), self._stream(music.get_artist_albums, sources, show_albums)]
+        if extras:
+            jobs += [appears_on(), similar()]
+        await asyncio.gather(*jobs)
+
+    def _artist_grid(self, artists, parent: Gtk.Box) -> None:
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=8,
+                           min_children_per_line=2, homogeneous=True, activate_on_single_click=True)
+        for i, a in enumerate(artists):
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            card.add_css_class("tile")
+            art = ArtImage(self.backend, 120)
+            art.set_item(a)
+            card.append(art)
+            card.append(label(a.name, "title-s", max_width_chars=1, margin_top=6, xalign=0.5))
+            tile = pop_in(card, delay_ms=min(i, 12) * 35)
+            tile.album = a
+            flow.append(tile)
+        flow.connect("child-activated", lambda _f, ch: self.open_item(ch.get_child().album))
+        parent.append(flow)
 
     def _album_grid(self, albums, parent: Gtk.Box | None = None) -> None:
         flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=8,
