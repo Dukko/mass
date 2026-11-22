@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 
 from gi.repository import GLib, Gtk
 from music_assistant_models.enums import MediaType, SortDirection, SortField
 
+from ..backend import RECOMMENDATION_ITEMS_SCHEMA
 from .common import ArtImage, label
 from .expressive import Sym, WavySeekbar
 from .library import library_sort, subtitle_for
 from .nowplaying import art_url, is_playing, schedule_refresh, track_info
+
+log = logging.getLogger(__name__)
 
 OPENABLE = (MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST)
 
@@ -119,7 +124,8 @@ class HeroCard(Gtk.Button):
 class HomeView(Gtk.ScrolledWindow):
     def __init__(self, backend, open_item, open_np) -> None:
         super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        self.backend = backend
+        self.backend, self.open_item = backend, open_item
+        self._recs_gen = 0
         col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=28, margin_start=20, margin_end=20,
                       margin_top=56, margin_bottom=120)
         self.set_child(col)
@@ -137,6 +143,9 @@ class HomeView(Gtk.ScrolledWindow):
         self.radio = Carousel(backend, "Radio", open_item, 120)
         for c in (self.recent, self.added, self.playlists, self.radio):
             col.append(c)
+        self.recs = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=28)
+        self.recs.set_visible(False)
+        col.append(self.recs)
         backend.connect("status-changed", self._on_status)
         self._loaded = False
         self.connect("map", lambda *_: self._loaded or self.load())
@@ -161,6 +170,7 @@ class HomeView(Gtk.ScrolledWindow):
             items = await m.recently_played(limit=20, media_types=[MediaType.ALBUM, MediaType.PLAYLIST,
                                                                     MediaType.ARTIST, MediaType.RADIO])
             self.recent.set_items(items)
+            return {it.uri for it in items}
 
         async def added():
             self.added.set_items(await m.get_library_albums(
@@ -174,5 +184,48 @@ class HomeView(Gtk.ScrolledWindow):
             self.radio.set_items(await m.get_library_radios(
                 limit=20, **library_sort(b, SortField.SORT_NAME, SortDirection.ASC, "sort_name")))
 
-        for coro in (recent(), added(), playlists(), radio()):
+        self._recs_gen += 1
+        gen = self._recs_gen
+
+        async def recent_then_recs():
+            shown: set[str] = set()
+            try:
+                shown = await recent()
+            finally:
+                await self._load_recs(shown, gen)
+
+        for coro in (recent_then_recs(), added(), playlists(), radio()):
             b.run(coro)
+
+    async def _row_items(self, row) -> list:
+        items = list(row.items)
+        if not items and self.backend.supports(RECOMMENDATION_ITEMS_SCHEMA):
+            items = await self.backend.client.music.recommendation_items(row.provider, row.item_id)
+        return [it for it in items if it.media_type != MediaType.FOLDER]
+
+    async def _load_recs(self, shown: set[str], gen: int) -> None:
+        try:
+            rows = [r for r in await self.backend.client.music.recommendations() if r.enabled_by_default]
+
+            async def fetch(row):
+                try:
+                    return await self._row_items(row)
+                except Exception as err:
+                    log.debug("recommendation row %s failed: %s", row.name, err)
+                    return []
+
+            results = await asyncio.gather(*(fetch(r) for r in rows))
+            if gen != self._recs_gen:
+                return
+            while c := self.recs.get_first_child():
+                self.recs.remove(c)
+            for row, items in zip(rows, results, strict=True):
+                if not items or all(it.uri in shown for it in items):
+                    continue
+                car = Carousel(self.backend, row.name, self.open_item)
+                car.set_items(items)
+                self.recs.append(car)
+        except Exception as err:
+            log.debug("recommendations unavailable: %s", err)
+            return
+        self.recs.set_visible(self.recs.get_first_child() is not None)
