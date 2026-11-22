@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "mass-matugen"
 version = "1.2.0"
 description = "Music Assistant desktop player with matugen theming and deep Linux integration"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "music-assistant-client>=1.8",
     "sendspin>=9.1,<9.2",

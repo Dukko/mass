@@ -16,21 +16,21 @@ concurrency:
 jobs:
   lint-test:
     runs-on: ubuntu-24.04
+    # music-assistant-client needs Python >= 3.13, newer than Ubuntu 24.04's python3;
+    # Arch ships a current python together with the PyGObject typelibs
+    container: archlinux:latest
     steps:
-      - uses: actions/checkout@v7
-
       - name: System packages for PyGObject
         # PyGObject is built against the distro python and needs the typelibs at import time
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            python3-venv python3-gi python3-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-secret-1
+        run: pacman -Syu --noconfirm git python python-pip python-gobject python-cairo gtk4 libadwaita libsecret
+
+      - uses: actions/checkout@v7
 
       - name: Python deps
         run: |
-          python3 -m venv --system-site-packages .ci-venv
+          python -m venv --system-site-packages .ci-venv
           .ci-venv/bin/pip install -q --upgrade pip
-          .ci-venv/bin/pip install -q pytest 'ruff>=0.17,<0.18' aiohttp music-assistant-client zeroconf
+          .ci-venv/bin/pip install -q pytest 'ruff>=0.17,<0.18' aiohttp 'music-assistant-client>=1.8.1' zeroconf
 
       - name: Lint
         run: .ci-venv/bin/ruff check --select F,B mass tests tools
