@@ -8,7 +8,10 @@ from collections import OrderedDict
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 from music_assistant_models.enums import MediaType, QueueOption
 
+from ..backend import FAVORITABLE
+from ..webapp import item_route
 from .expressive import ShapeArt, Sym, sym_button
+from .links import open_webapp
 
 PLACEHOLDER_ICONS = {
     MediaType.ARTIST: "avatar-default-symbolic",
@@ -195,13 +198,79 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item):
     playlist.connect("activate", lambda *_: (item := get_item()) is not None and open_add_to_playlist(widget, backend, [item]))
     group.add_action(playlist)
 
+    def toast(message: str) -> None:
+        root = widget.get_root()
+        if hasattr(root, "toast"):
+            root.toast(message)
+
+    def set_favorite(on: bool) -> None:
+        item = get_item()
+        if item is None:
+            return
+
+        def done(_ok: bool) -> None:
+            item.favorite = on
+            refresh()
+            toast("Added to favorites" if on else "Removed from favorites")
+
+        backend.toggle_favorite(item, on, done, lambda _err: toast("Couldn't update favorites"))
+
+    favorite = Gio.SimpleAction.new("favorite", None)
+    favorite.connect("activate", lambda *_: set_favorite(True))
+    group.add_action(favorite)
+    unfavorite = Gio.SimpleAction.new("unfavorite", None)
+    unfavorite.connect("activate", lambda *_: set_favorite(False))
+    group.add_action(unfavorite)
+
+    def open_target(pick) -> None:
+        item = get_item()
+        target = pick(item) if item is not None else None
+        root = widget.get_root()
+        if target is not None and hasattr(root, "open_item"):
+            root.open_item(target)
+
+    album = Gio.SimpleAction.new("album", None)
+    album.connect("activate", lambda *_: open_target(_item_album))
+    group.add_action(album)
+    artist = Gio.SimpleAction.new("artist", None)
+    artist.connect("activate", lambda *_: open_target(_item_artist))
+    group.add_action(artist)
+
+    webapp = Gio.SimpleAction.new("webapp", None)
+    webapp.connect(
+        "activate",
+        lambda *_: (item := get_item()) is not None and open_webapp(widget, backend, item_route(item) or ""),
+    )
+    group.add_action(webapp)
+
     def refresh() -> None:
         item = get_item()
-        playlist.set_enabled(getattr(item, "media_type", None) in PLAYLIST_ADDABLE)
+        media_type = getattr(item, "media_type", None)
+        playlist.set_enabled(media_type in PLAYLIST_ADDABLE)
+        favoritable = media_type in FAVORITABLE
+        is_fav = bool(getattr(item, "favorite", False))
+        favorite.set_enabled(favoritable and not is_fav)
+        unfavorite.set_enabled(favoritable and is_fav)
+        album.set_enabled(_item_album(item) is not None)
+        artist.set_enabled(_item_artist(item) is not None)
+        webapp.set_enabled(item is not None and item_route(item) is not None)
 
     refresh()
     widget.insert_action_group("media", group)
     return refresh
+
+
+def _item_album(item):
+    if getattr(item, "media_type", None) != MediaType.TRACK:
+        return None
+    return getattr(item, "album", None)
+
+
+def _item_artist(item):
+    if getattr(item, "media_type", None) not in (MediaType.TRACK, MediaType.ALBUM):
+        return None
+    artists = getattr(item, "artists", None)
+    return artists[0] if artists else None
 
 
 async def _play_radio(backend, item) -> None:
@@ -224,6 +293,18 @@ def media_menu_model() -> Gio.Menu:
     to_playlist.set_attribute_value("hidden-when", GLib.Variant("s", "action-disabled"))
     sec2.append_item(to_playlist)
     menu.append_section(None, sec2)
+    sec3 = Gio.Menu()
+    for text, action in (
+        ("Add to favorites", "media.favorite"),
+        ("Remove from favorites", "media.unfavorite"),
+        ("Go to album", "media.album"),
+        ("Go to artist", "media.artist"),
+        ("Open in web app", "media.webapp"),
+    ):
+        entry = Gio.MenuItem.new(text, action)
+        entry.set_attribute_value("hidden-when", GLib.Variant("s", "action-disabled"))
+        sec3.append_item(entry)
+    menu.append_section(None, sec3)
     return menu
 
 
