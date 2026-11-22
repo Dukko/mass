@@ -19,6 +19,9 @@ PLACEHOLDER_ICONS = {
     MediaType.RADIO: "network-wireless-symbolic",
     MediaType.PODCAST: "microphone-sensitivity-high-symbolic",
     MediaType.AUDIOBOOK: "accessories-dictionary-symbolic",
+    MediaType.GENRE: "view-grid-symbolic",
+    MediaType.PODCAST_EPISODE: "microphone-sensitivity-high-symbolic",
+    MediaType.FOLDER: "folder-symbolic",
 }
 
 # M3E: vary shapes by content type
@@ -28,6 +31,9 @@ SHAPE_FOR = {
     MediaType.RADIO: "sunny",
     MediaType.PODCAST: "clover",
     MediaType.AUDIOBOOK: "cookie6",
+    MediaType.GENRE: "cookie6",
+    MediaType.PODCAST_EPISODE: "clover",
+    MediaType.FOLDER: "square",
 }
 
 
@@ -361,4 +367,14 @@ def media_row(backend, item, subtitle: str = "", on_activate=None, **kw) -> Medi
 
 def status_page(icon: str, title: str, description: str = "") -> Adw.StatusPage:
     sp = Adw.StatusPage(icon_name=icon, title=title, description=description)
+    return sp
+
+
+def retry_page(title: str, on_retry) -> Adw.StatusPage:
+    sp = status_page("dialog-error-symbolic", title, "Check the connection to the server and try again.")
+    btn = Gtk.Button(label="Retry", halign=Gtk.Align.CENTER)
+    btn.add_css_class("pill")
+    btn.add_css_class("suggested-action")
+    btn.connect("clicked", lambda *_: on_retry())
+    sp.set_child(btn)
     return sp

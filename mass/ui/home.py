@@ -17,7 +17,7 @@ from .nowplaying import art_url, is_playing, schedule_refresh, track_info
 
 log = logging.getLogger(__name__)
 
-OPENABLE = (MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST)
+OPENABLE = (MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.PODCAST, MediaType.GENRE)
 
 
 def greeting() -> str:

@@ -124,7 +124,8 @@ class SearchView(Gtk.Box):
             col.append(label(subtitle_for(it), "label-m", "on-variant", xalign=xa, max_width_chars=1))
             col.set_size_request(140, -1)
             btn.set_child(col)
-            if it.media_type in (MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST):
+            if it.media_type in (MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST, MediaType.PODCAST,
+                                 MediaType.GENRE):
                 btn.connect("clicked", lambda _b, i=it: self.open_item(i))
             else:
                 btn.connect("clicked", lambda _b, i=it: self.backend.play_media(i))
