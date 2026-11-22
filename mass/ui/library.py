@@ -35,6 +35,7 @@ from .paging import PAGE, Pager
 
 CHANGE_DEBOUNCE_MS = 300
 SAVE_DEBOUNCE_MS = 800
+GENRE_RETRY_SECONDS = (5, 15, 60, 180)
 log = logging.getLogger(__name__)
 
 
@@ -171,6 +172,9 @@ class LibraryView(Gtk.Box):
         self._first_button: Gtk.ToggleButton | None = None
         self._playlists_source = 0
         self._save_source = 0
+        self._genre_gen = 0
+        self._genre_attempts = 0
+        self._genre_retry_source = 0
         self._genres_tab = False  # survives reconnects so the Genres tab doesn't flicker out under the user
 
         self.head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_start=28, margin_end=28,
@@ -188,6 +192,7 @@ class LibraryView(Gtk.Box):
         self.head.append(self.seg_scroll)
         self.toolbar = LibraryToolbar(backend, self._on_toolbar_change)
         self.toolbar.set_visible(False)
+        self.connect("destroy", lambda *_: self._stop_genre_probe())
         self.connect("destroy", lambda *_: self.flush_save())
         self.connect("unmap", lambda *_: self.flush_save())
         self.head.append(self.toolbar)
@@ -267,8 +272,18 @@ class LibraryView(Gtk.Box):
                 and self.backend.schema >= LISTING_FILTER_SCHEMA)
 
     async def _probe_genres(self) -> None:
-        """Learn once per connection whether genre filters work; a flip resets tabs that use them."""
+        """Learn once per connection whether genre filters work; a flip resets tabs that use them.
+
+        An unknown answer leaves the tab and filters as they were and retries with a backoff.
+        """
+        gen = self._genre_gen
         usable = await self.backend.has_genres()
+        if gen != self._genre_gen:
+            return
+        if usable is None:
+            self._schedule_genre_retry()
+            return
+        self._cancel_genre_retry()
         previous = self.toolbar.genres_usable
         self.toolbar.set_genres_usable(usable)
         self._genres_tab = usable
@@ -277,6 +292,28 @@ class LibraryView(Gtk.Box):
                 if tab.kind and self.states[name].genre_ids:
                     self._reset_tab(name)
         self._update_tabs()
+
+    def _schedule_genre_retry(self) -> None:
+        if self._genre_retry_source or self._genre_attempts >= len(GENRE_RETRY_SECONDS):
+            return
+        delay = GENRE_RETRY_SECONDS[self._genre_attempts]
+        self._genre_attempts += 1
+        log.debug("genre probe inconclusive, retry %d in %ds", self._genre_attempts, delay)
+        self._genre_retry_source = GLib.timeout_add_seconds(delay, self._retry_genres)
+
+    def _retry_genres(self) -> bool:
+        self._genre_retry_source = 0
+        self.backend.run(self._probe_genres())
+        return False
+
+    def _cancel_genre_retry(self) -> None:
+        if self._genre_retry_source:
+            GLib.source_remove(self._genre_retry_source)
+            self._genre_retry_source = 0
+
+    def _stop_genre_probe(self) -> None:
+        self._genre_gen += 1
+        self._cancel_genre_retry()
 
     def _update_tabs(self) -> None:
         for tab in self.tabs.values():
@@ -375,8 +412,10 @@ class LibraryView(Gtk.Box):
         self.seg_scroll.set_halign(Gtk.Align.FILL if narrow else Gtk.Align.START)
 
     def _on_status(self, _b, status, _d) -> None:
+        self._stop_genre_probe()
         if status != "connected":
             return
+        self._genre_attempts = 0
         self.toolbar.genres_usable = None
         self._update_tabs()
         self.backend.run(self._probe_genres())

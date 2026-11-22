@@ -329,15 +329,17 @@ class Backend(GObject.Object):
         found = [p for p in self.client.providers if p.type == ProviderType.MUSIC and p.available]
         return sorted(found, key=lambda p: p.name.casefold())
 
-    async def has_genres(self) -> bool:
+    async def has_genres(self) -> bool | None:
         """Whether the server has a genre library; probed because the client doesn't gate it.
 
-        Only a definite answer is cached: genres found, or the server not knowing the command.
+        None means the probe could not tell (not connected, or a transient failure) and is worth
+        retrying. An empty library answers False without being cached, so the next connect re-probes it.
+        Genres found, or the server not knowing the command, are cached for the connection.
         """
         if self._genres_ok is not None:
             return self._genres_ok
         if not self.client:
-            return False
+            return None
         try:
             genres = await self.client.music.get_library_genres(limit=1)
         except InvalidCommand as err:
@@ -346,7 +348,7 @@ class Backend(GObject.Object):
             return False
         except Exception as err:  # noqa: BLE001 - transient; the next call retries
             log.debug("genre probe failed: %s", err)
-            return False
+            return None
         if genres:
             self._genres_ok = True
         return bool(genres)

@@ -201,7 +201,7 @@ def test_has_genres_transient_error_is_retried_on_the_next_call():
     async def go():
         return await b.has_genres(), await b.has_genres()
 
-    assert asyncio.run(go()) == (False, True)
+    assert asyncio.run(go()) == (None, True)
     assert b.music.genre_calls == 2
 
 
