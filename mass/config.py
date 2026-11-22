@@ -51,6 +51,8 @@ class Config:
     wavy_progress: bool = True
     # AI DJ host id -> Material Symbols name shown for that host (default: AI_ICON)
     dj_icons: dict[str, str] = field(default_factory=dict)
+    # library tab name -> ListingState as plain JSON (see listing.state_to_json)
+    library_listings: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> Config:
@@ -59,7 +61,10 @@ class Config:
         except (OSError, ValueError):
             return cls()
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        config = cls(**{k: v for k, v in data.items() if k in known})
+        if not isinstance(config.library_listings, dict):
+            config.library_listings = {}
+        return config
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

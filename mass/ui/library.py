@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
-from gi.repository import Gdk, Gio, GLib, Gtk
-from music_assistant_models.enums import EventType, MediaType, SortDirection, SortField
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from music_assistant_models.enums import EventType, ListingType, MediaType, SortDirection, SortField
 
+from ..listing import LISTING_FILTER_SCHEMA, LibraryKind,ListingState, effective_state, listing_kwargs, state_from_json, state_to_json
 from .common import (
     ArtImage,
     ItemObject,
@@ -18,9 +20,11 @@ from .common import (
     media_menu_model,
 )
 from .expressive import sym_button
+from .library_toolbar import LibraryToolbar
 from .paging import PAGE, Pager
 
 CHANGE_DEBOUNCE_MS = 300
+SAVE_DEBOUNCE_MS = 800
 log = logging.getLogger(__name__)
 
 
@@ -136,59 +140,162 @@ class MediaGrid(Gtk.ScrolledWindow):
 
 
 class LibraryView(Gtk.Box):
-    """Display header + segmented button group over Albums / Artists / Playlists / Radio."""
+    """Display header, segmented tab group and per-tab search/sort/filter toolbar over the library grids.
+
+    Each tab keeps its own `ListingState`, saved to the config so it survives restarts.
+    """
 
     def __init__(self, backend, open_item) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.backend = backend
-        music = lambda: backend.client.music  # noqa: E731
+        self.open_item = open_item
         self.stack = Gtk.Stack(vexpand=True, transition_type=Gtk.StackTransitionType.CROSSFADE,
                                transition_duration=200)
-        self.grids: list[MediaGrid] = []
-
-        self.head = Gtk.Box(spacing=16, margin_start=28, margin_end=28, margin_top=56, margin_bottom=12)
-        self.head.append(label("Library", "display-m", hexpand=True, ellipsize=False))
-        self.new_playlist = sym_button("playlist_add", "New playlist", ("m3", "icon", "tonal"), cb=self._new_playlist)
-        self.new_playlist.set_halign(Gtk.Align.START)
-        self.new_playlist.set_visible(False)
-        self.head.append(self.new_playlist)
-        self._playlists_grid: MediaGrid | None = None
+        self.tabs: dict[str, LibraryTab] = {}
+        self.states: dict[str, ListingState] = {}
+        self.current = ""
+        self._first_button: Gtk.ToggleButton | None = None
         self._playlists_source = 0
+        self._save_source = 0
+
+        self.head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_start=28, margin_end=28,
+                            margin_top=56, margin_bottom=12)
+        title_row = Gtk.Box(spacing=16)
+        title_row.append(label("Library", "display-m", hexpand=True, ellipsize=False))
+        self.new_playlist = sym_button("playlist_add", "New playlist", ("m3", "icon", "tonal"), cb=self._new_playlist)
+        self.new_playlist.set_visible(False)
+        title_row.append(self.new_playlist)
+        self.head.append(title_row)
         self.seg = Gtk.Box(valign=Gtk.Align.CENTER)
         self.seg.add_css_class("seg")
-        self.head.append(self.seg)
+        self.seg_scroll = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                             hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, child=self.seg)
+        self.head.append(self.seg_scroll)
+        self.toolbar = LibraryToolbar(backend, self._on_toolbar_change)
+        self.toolbar.set_visible(False)
+        self.connect("destroy", lambda *_: self.flush_save())
+        self.connect("unmap", lambda *_: self.flush_save())
+        self.head.append(self.toolbar)
         self.append(self.head)
         self.append(self.stack)
-        first = None
 
-        def add(name, title, fetch, size=168, center=False):
-            nonlocal first
-            grid = MediaGrid(backend, fetch, open_item, size, center)
-            self.grids.append(grid)
-            self.stack.add_named(grid, name)
-            btn = Gtk.ToggleButton(label=title, group=first)
-            first = first or btn
-            btn.connect("toggled", lambda b: b.get_active() and self._show_tab(name))
-            self.seg.append(btn)
-            if name == "playlists":
-                self._playlists_grid = grid
+        def grid_tab(name: str, title: str, kind: LibraryKind, listing: ListingType, getter: str,
+                     size: int = 168, center: bool = False) -> None:
+            async def fetch(o: int, n: int):
+                if self._genres_unknown(name):
+                    await self._probe_genres()
+                return await getattr(backend.client.music, getter)(limit=n, offset=o, **self._kwargs(name))
 
-        S = lambda f, d, legacy: library_sort(backend, f, d, legacy)  # noqa: E731
-        add("albums", "Albums", lambda o, n: music().get_library_albums(
-            limit=n, offset=o, **S(SortField.TIMESTAMP_ADDED, SortDirection.DESC, "timestamp_added_desc")))
-        add("artists", "Artists", lambda o, n: music().get_library_artists(
-            limit=n, offset=o, **S(SortField.SORT_NAME, SortDirection.ASC, "sort_name")), 150, True)
-        add("playlists", "Playlists", lambda o, n: music().get_library_playlists(
-            limit=n, offset=o, **S(SortField.SORT_NAME, SortDirection.ASC, "sort_name")))
-        add("radios", "Radio", lambda o, n: music().get_library_radios(
-            limit=n, offset=o, **S(SortField.SORT_NAME, SortDirection.ASC, "sort_name")), 130, True)
-        first.set_active(True)
+            self.add_tab(name, title, MediaGrid(backend, fetch, open_item, size, center), kind, listing)
+
+        grid_tab("albums", "Albums", "albums", ListingType.LIBRARY_ALBUMS, "get_library_albums")
+        grid_tab("artists", "Artists", "artists", ListingType.LIBRARY_ARTISTS, "get_library_artists", 150, True)
+        grid_tab("playlists", "Playlists", "playlists", ListingType.LIBRARY_PLAYLISTS, "get_library_playlists")
+        grid_tab("radios", "Radio", "radios", ListingType.LIBRARY_RADIOS, "get_library_radios", 130, True)
+        self._first_button.set_active(True)
         backend.connect("status-changed", self._on_status)
         backend.connect("media-item-changed", self._on_media_changed)
 
+    def add_tab(self, name: str, title: str, view: Gtk.Widget, kind: LibraryKind | None = None,
+                listing: ListingType | None = None, available: Callable[[], bool] = lambda: True) -> None:
+        """Register a tab. `view` needs `reset()`; a `MediaGrid` also gets the empty/no-matches page.
+
+        `kind` and `listing` enable the toolbar and the saved listing state for the tab.
+        """
+        saved = self.backend.config.library_listings.get(name)
+        self.states[name] = state_from_json(saved) if kind else ListingState()
+        wrapper = Gtk.Stack()
+        wrapper.add_named(view, "grid")
+        status = Adw.StatusPage(icon_name="folder-music-symbolic")
+        clear = Gtk.Button(label="Clear filters", halign=Gtk.Align.CENTER)
+        clear.add_css_class("pill")
+        clear.connect("clicked", lambda *_: self._clear_filters(name))
+        status.set_child(clear)
+        wrapper.add_named(status, "empty")
+        btn = Gtk.ToggleButton(label=title, group=self._first_button)
+        self._first_button = self._first_button or btn
+        btn.connect("toggled", lambda b: b.get_active() and self._show_tab(name))
+        self.seg.append(btn)
+        self.stack.add_named(wrapper, name)
+        self.tabs[name] = LibraryTab(name, title, kind, listing, available, view, wrapper, status, clear, btn)
+        if isinstance(view, MediaGrid):
+            view.on_empty = lambda empty: self._on_empty(name, empty)
+
+    def _effective(self, name: str) -> ListingState:
+        return effective_state(self.states[name], self.tabs[name].kind, self.backend.schema,
+                               len(self.backend.music_providers()), self.toolbar.genres_available)
+
+    def _kwargs(self, name: str) -> dict:
+        return listing_kwargs(self._effective(name), self.tabs[name].kind, self.backend.schema)
+
+    def _reset_tab(self, name: str) -> None:
+        tab = self.tabs[name]
+        tab.wrapper.set_visible_child_name("grid")
+        tab.view.reset()
+
+    def _genres_unknown(self, name: str) -> bool:
+        return (self.toolbar.genres_usable is None and bool(self.states[name].genre_ids)
+                and self.backend.schema >= LISTING_FILTER_SCHEMA)
+
+    async def _probe_genres(self) -> None:
+        """Learn once per connection whether genre filters work; a flip resets tabs that use them."""
+        usable = await self.backend.has_genres()
+        previous = self.toolbar.genres_usable
+        self.toolbar.set_genres_usable(usable)
+        if previous is not None and previous != usable:
+            for name, tab in self.tabs.items():
+                if tab.kind and self.states[name].genre_ids:
+                    self._reset_tab(name)
+
+    def flush_save(self) -> None:
+        if self._save_source:
+            GLib.source_remove(self._save_source)
+            self._save_states()
+
+    def _on_empty(self, name: str, empty: bool) -> None:
+        tab = self.tabs[name]
+        filtered = self._effective(name).is_filtered()
+        tab.status.set_title("No matches" if filtered else "Nothing here yet")
+        tab.status.set_description("Try changing or clearing the filters." if filtered else "")
+        tab.clear.set_visible(filtered)
+        tab.wrapper.set_visible_child_name("empty" if empty else "grid")
+
+    def _clear_filters(self, name: str) -> None:
+        self._set_state(name, self.states[name].cleared())
+        self.toolbar.show_tab(self.tabs[name].kind, self.tabs[name].listing, self.states[name], self.tabs[name].title)
+
+    def _on_toolbar_change(self, state: ListingState) -> None:
+        self._set_state(self.current, state)
+
+    def _set_state(self, name: str, state: ListingState) -> None:
+        self.states[name] = state
+        self._reset_tab(name)
+        self._schedule_save()
+
+    def _schedule_save(self) -> None:
+        if self._save_source:
+            GLib.source_remove(self._save_source)
+        self._save_source = GLib.timeout_add(SAVE_DEBOUNCE_MS, self._save_states)
+
+    def _save_states(self) -> bool:
+        self._save_source = 0
+        config = self.backend.config
+        config.library_listings = {n: state_to_json(s) for n, s in self.states.items() if self.tabs[n].kind}
+        try:
+            config.save()
+        except OSError as err:
+            log.warning("saving library filters failed: %s", err)
+        return False
+
     def _show_tab(self, name: str) -> None:
+        self.toolbar.flush()
+        self.current = name
+        tab = self.tabs[name]
         self.stack.set_visible_child_name(name)
         self.new_playlist.set_visible(name == "playlists")
+        self.toolbar.set_visible(tab.kind is not None)
+        if tab.kind is not None:
+            self.toolbar.show_tab(tab.kind, tab.listing, self.states[name], tab.title)
 
     def _new_playlist(self) -> None:
         ask_text(self, "New playlist", "", "Playlist name", "Create", self._create_playlist)
@@ -219,14 +326,42 @@ class LibraryView(Gtk.Box):
 
     def _reset_playlists(self) -> bool:
         self._playlists_source = 0
-        self._playlists_grid.reset()
+        self._reset_tab("playlists")
         return False
 
     def set_narrow(self, narrow: bool) -> None:
-        self.head.set_orientation(Gtk.Orientation.VERTICAL if narrow else Gtk.Orientation.HORIZONTAL)
-        self.seg.set_halign(Gtk.Align.START if narrow else Gtk.Align.FILL)
+        self.head.set_margin_start(16 if narrow else 28)
+        self.head.set_margin_end(16 if narrow else 28)
+        self.seg_scroll.set_halign(Gtk.Align.FILL if narrow else Gtk.Align.START)
 
     def _on_status(self, _b, status, _d) -> None:
-        if status == "connected":
-            for g in self.grids:
-                g.reset()
+        if status != "connected":
+            return
+        for tab in self.tabs.values():
+            tab.button.set_visible(tab.available())
+        current = self.tabs.get(self.current)
+        if current is None or not current.available():
+            first = next((t for t in self.tabs.values() if t.available()), None)
+            if first is not None:
+                first.button.set_active(True)
+        self.toolbar.genres_usable = None
+        if self.backend.schema >= LISTING_FILTER_SCHEMA:
+            self.backend.run(self._probe_genres())
+        if self.toolbar.get_visible():
+            self.toolbar.refresh_capabilities()
+        for name in self.tabs:
+            self._reset_tab(name)
+
+
+@dataclass
+class LibraryTab:
+    name: str
+    title: str
+    kind: LibraryKind | None
+    listing: ListingType | None
+    available: Callable[[], bool]
+    view: Gtk.Widget
+    wrapper: Gtk.Stack
+    status: Adw.StatusPage
+    clear: Gtk.Button
+    button: Gtk.ToggleButton

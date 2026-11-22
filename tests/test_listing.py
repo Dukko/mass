@@ -1,5 +1,6 @@
 """Listing state to client arguments, per server schema."""
 
+import json
 from types import SimpleNamespace
 
 from music_assistant_models.api import SortOptionInfo
@@ -8,9 +9,12 @@ from music_assistant_models.enums import AlbumType, SortDirection, SortField
 from mass.listing import (
     ListingState,
     available_filters,
+    effective_state,
     legacy_order_by,
     listing_kwargs,
     matches_query,
+    state_from_json,
+    state_to_json,
     usable_sort_fields,
 )
 
@@ -93,3 +97,42 @@ def test_matches_query_checks_artist_and_album_names_case_insensitively():
     assert matches_query(track, "abbey")
     assert matches_query(track, "")
     assert not matches_query(track, "stones")
+
+
+def test_state_round_trips_through_json_without_the_random_seed():
+    state = ListingState(search="abbey", favorite_only=True, sort_field=SortField.YEAR,
+                         sort_direction=SortDirection.DESC, genre_ids=(3, 4), providers=("spotify--x",),
+                         album_types=(AlbumType.EP,), played_only=True, random_seed=7)
+
+    restored = state_from_json(json.loads(json.dumps(state_to_json(state))))
+
+    assert restored == ListingState(search="abbey", favorite_only=True, sort_field=SortField.YEAR,
+                                    sort_direction=SortDirection.DESC, genre_ids=(3, 4),
+                                    providers=("spotify--x",), album_types=(AlbumType.EP,), played_only=True)
+
+
+def test_state_from_json_drops_unknown_values():
+    data = {"sort_field": "bogus", "sort_direction": "asc", "album_types": ["ep", "nope"],
+            "genre_ids": [1, "x", True], "providers": [5, "a"], "search": 3, "favorite_only": "yes"}
+
+    assert state_from_json(data) == ListingState(album_types=(AlbumType.EP,), genre_ids=(1,), providers=("a",))
+    assert state_from_json("garbage") == ListingState()
+
+
+def test_state_from_json_rerolls_seed_for_random_sort():
+    state = state_from_json({"sort_field": "random"})
+
+    assert state.sort_field == SortField.RANDOM
+    assert state.random_seed is not None
+
+
+def test_effective_state_drops_filters_the_server_cannot_honour_but_keeps_the_rest():
+    saved = ListingState(search="x", genre_ids=(1,), providers=("a",), played_only=True,
+                         album_types=(AlbumType.EP,))
+
+    effective = effective_state(saved, "albums", 65, 1)
+
+    assert effective == ListingState(search="x", album_types=(AlbumType.EP,))
+    assert not effective_state(ListingState(genre_ids=(1,), played_only=True), "radios", 65, 3).is_filtered()
+    assert effective_state(saved, "albums", 101, 3) == saved
+    assert effective_state(saved, "albums", 101, 3, has_genres=False).genre_ids == ()

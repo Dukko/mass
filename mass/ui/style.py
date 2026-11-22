@@ -204,6 +204,12 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
   transition: border-radius {FAST_SPATIAL}, background {EFFECTS};
 }}
 .mass .chip:hover {{ background: {mix('on-surface', 8)}; }}
+.mass menubutton.chip {{ padding: 0; background: none; box-shadow: none; }}
+.mass menubutton.chip > button {{
+  min-height: 32px; padding: 0 14px; border-radius: {R_S}px; font-weight: 600;
+  background: none; box-shadow: inset 0 0 0 1px {v('outline-variant')};
+}}
+.mass menubutton.chip > button:hover {{ background: {mix('on-surface', 8)}; }}
 .mass .chip.on, .mass .chip:checked {{
   background: {v('secondary-container')}; color: {v('on-secondary-container')}; box-shadow: none;
   border-radius: {R_L}px;

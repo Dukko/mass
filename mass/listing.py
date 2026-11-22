@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from music_assistant_models.api import SortOptionInfo
@@ -139,6 +140,24 @@ def available_filters(kind: LibraryKind, schema: int, provider_count: int) -> fr
     return frozenset(out)
 
 
+def effective_state(state: ListingState, kind: LibraryKind, schema: int, provider_count: int,
+                    has_genres: bool = True) -> ListingState:
+    """The state with saved filters the server or provider set can't honour dropped.
+
+    The original keeps them, so they apply again if the capability returns.
+    """
+    allowed = available_filters(kind, schema, provider_count)
+    if not has_genres:
+        allowed -= {"genre"}
+    return replace(
+        state,
+        genre_ids=state.genre_ids if "genre" in allowed else (),
+        providers=state.providers if "provider" in allowed else (),
+        album_types=state.album_types if "album_type" in allowed else (),
+        played_only=state.played_only and "played" in allowed,
+    )
+
+
 def listing_kwargs(state: ListingState, kind: LibraryKind, schema: int) -> dict[str, Any]:
     """Keyword arguments for `get_library_<kind>`, limited to what the server's schema accepts."""
     kwargs: dict[str, Any] = {}
@@ -169,6 +188,61 @@ def listing_kwargs(state: ListingState, kind: LibraryKind, schema: int) -> dict[
     if state.album_types and kind == "albums":
         kwargs["album_types"] = list(state.album_types)
     return kwargs
+
+
+def _enum_or_none(enum_cls: type, value: Any) -> Any:
+    try:
+        return enum_cls(value)
+    except ValueError:
+        return None
+
+
+def state_to_json(state: ListingState) -> dict[str, Any]:
+    """Plain-JSON form of a state; the random seed is deliberately left out."""
+    data: dict[str, Any] = {}
+    if state.search:
+        data["search"] = state.search
+    if state.favorite_only:
+        data["favorite_only"] = True
+    if state.sort_field is not None:
+        data["sort_field"] = state.sort_field.value
+    if state.sort_direction is not None:
+        data["sort_direction"] = state.sort_direction.value
+    if state.genre_ids:
+        data["genre_ids"] = list(state.genre_ids)
+    if state.providers:
+        data["providers"] = list(state.providers)
+    if state.album_types:
+        data["album_types"] = [t.value for t in state.album_types]
+    if state.played_only:
+        data["played_only"] = True
+    return data
+
+
+def _list_of(data: dict[str, Any], key: str) -> list[Any]:
+    value = data.get(key)
+    return value if isinstance(value, list) else []
+
+
+def state_from_json(data: Any) -> ListingState:
+    """Inverse of `state_to_json`; anything unknown or malformed is dropped."""
+    if not isinstance(data, dict):
+        return ListingState()
+    search = data.get("search")
+    field = _enum_or_none(SortField, data.get("sort_field"))
+    direction = _enum_or_none(SortDirection, data.get("sort_direction"))
+    album_types = (_enum_or_none(AlbumType, v) for v in _list_of(data, "album_types"))
+    return ListingState(
+        search=search if isinstance(search, str) else "",
+        favorite_only=data.get("favorite_only") is True,
+        sort_field=field,
+        sort_direction=direction if field is not None else None,
+        genre_ids=tuple(v for v in _list_of(data, "genre_ids") if isinstance(v, int) and not isinstance(v, bool)),
+        providers=tuple(v for v in _list_of(data, "providers") if isinstance(v, str)),
+        album_types=tuple(t for t in album_types if t not in (None, AlbumType.UNKNOWN)),
+        played_only=data.get("played_only") is True,
+        random_seed=random.randrange(2**31) if field in RANDOM_FIELDS else None,
+    )
 
 
 def matches_query(item: Any, query: str) -> bool:
