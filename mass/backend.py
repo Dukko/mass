@@ -19,15 +19,17 @@ from gi.repository import GLib, GObject
 from music_assistant_client import MusicAssistantClient
 from music_assistant_client.auth_helpers import login_with_token
 from music_assistant_client.exceptions import CannotConnect
-from music_assistant_models.errors import AuthenticationFailed, AuthenticationRequired
-from music_assistant_models.enums import EventType, MediaType, PlaybackState, RepeatMode
+from music_assistant_models.errors import AuthenticationFailed, AuthenticationRequired, InvalidCommand
+from music_assistant_models.api import SortOptionInfo
+from music_assistant_models.enums import EventType, ListingType, MediaType, PlaybackState, ProviderType, RepeatMode
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import Playlist, media_from_dict
 from music_assistant_models.player import Player
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.provider import ProviderInstance
 from music_assistant_models.queue_item import QueueItem
 
-from . import APP_NAME, secrets
+from . import APP_NAME, secrets, webapp
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,13 @@ SOUND_EFFECTS_SCHEMA = 35  # music/sound_effects
 OVERLAY_SCHEMA = 35  # player_queues/overlay
 ANNOUNCEMENT_SCHEMA = 28  # players/cmd/play_announcement (older than our minimum)
 PLAYLIST_MOVE_SCHEMA = 101  # music/playlists/move_playlist_track
+TYPED_SORT_SCHEMA = 86  # sort_field/sort_direction and music/sort_options
+EPISODE_PAGING_SCHEMA = 93  # podcast episode search/sort/paging
+BROWSE_PAGING_SCHEMA = 94  # browse search/sort/paging
+RANDOM_SEED_SCHEMA = 98  # stable random sort
+LISTING_FILTER_SCHEMA = 101  # genre and played_only library filters
+ARTIST_EXTRAS_SCHEMA = 101  # top tracks, appears on, similar artists
+RECOMMENDATION_ITEMS_SCHEMA = 101  # lazily loaded recommendation rows
 
 class Status:
     IDLE = "idle"
@@ -92,6 +101,8 @@ class Backend(GObject.Object):
         self._lyrics: dict[str, tuple[str | None, str | None]] = {}
         self._sound_effects: list[dict] | None = None
         self.dj_map: dict[str, str] = {}
+        self._sort_cache: dict[ListingType, list[SortOptionInfo]] = {}
+        self._genres_ok: bool | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -171,6 +182,8 @@ class Backend(GObject.Object):
                 if listen in done:
                     listen.result()  # raises the connect error
                     raise CannotConnect(Exception("connection closed"))
+                self._sort_cache = {}
+                self._genres_ok = None
                 self.client = client
                 client.subscribe(self._on_event)
                 delay = 1.0
@@ -289,6 +302,58 @@ class Backend(GObject.Object):
         """Whether the connected server is new enough for an optional command."""
         info = getattr(self.client, "server_info", None) if self.client else None
         return info is not None and info.schema_version >= schema
+
+    @property
+    def schema(self) -> int:
+        info = getattr(self.client, "server_info", None) if self.client else None
+        return info.schema_version if info is not None else 0
+
+    async def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
+        """Sort options the server offers for a listing; empty when it can't say."""
+        if not self.supports(TYPED_SORT_SCHEMA):
+            return []
+        if listing in self._sort_cache:
+            return self._sort_cache[listing]
+        try:
+            options = await self.client.music.get_sort_options(listing)
+        except Exception as err:  # noqa: BLE001 - callers fall back to the fixed sort list
+            log.debug("sort options failed for %s: %s", listing, err)
+            return []
+        self._sort_cache[listing] = options
+        return options
+
+    def music_providers(self) -> list[ProviderInstance]:
+        if not self.client:
+            return []
+        found = [p for p in self.client.providers if p.type == ProviderType.MUSIC and p.available]
+        return sorted(found, key=lambda p: p.name.casefold())
+
+    async def has_genres(self) -> bool:
+        """Whether the server has a genre library; probed because the client doesn't gate it.
+
+        Only a definite answer is cached: genres found, or the server not knowing the command.
+        """
+        if self._genres_ok is not None:
+            return self._genres_ok
+        if not self.client:
+            return False
+        try:
+            genres = await self.client.music.get_library_genres(limit=1)
+        except InvalidCommand as err:
+            log.debug("server has no genre command: %s", err)
+            self._genres_ok = False
+            return False
+        except Exception as err:  # noqa: BLE001 - transient; the next call retries
+            log.debug("genre probe failed: %s", err)
+            return False
+        if genres:
+            self._genres_ok = True
+        return bool(genres)
+
+    def webapp_url(self, route: str = "") -> str | None:
+        if not self.config.server_url:
+            return None
+        return webapp.webapp_url(self.config.server_url, route)
 
     def is_relevant(self, object_id: str) -> bool:
         """Whether an event object id affects the active player/queue."""
@@ -788,3 +853,43 @@ class Backend(GObject.Object):
             await music.add_item_to_favorites(mi.uri)  # adds it to the library too if needed
         elif library_id:
             await music.remove_item_from_favorites(mi.media_type, library_id)
+
+    def toggle_favorite(self, item, on: bool, on_done: Callable[[bool], None],
+                        on_fail: Callable[[Exception], None]) -> None:
+        """Favorite or unfavorite any library or provider item."""
+        if getattr(item, "media_type", None) not in FAVORITABLE:
+            on_fail(ValueError(f"can't favorite a {getattr(item, 'media_type', None)}"))
+            return
+
+        async def go() -> None:
+            try:
+                lib_id: str | None = None
+                if not on:
+                    if item.provider == "library":
+                        lib_id = str(item.item_id)
+                    else:
+                        lib_id = (await self.favorite_state(item))[1]
+                    if lib_id is None:
+                        raise LookupError("couldn't find the item in the library")
+                await self.set_favorite(item, on, lib_id)
+            except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
+                log.error("toggling favorite failed: %s", err)
+                on_fail(err)
+                return
+            on_done(on)
+
+        self.run(go())
+
+    def set_group_members(self, leader_id: str, add: list[str], remove: list[str],
+                          on_fail: Callable[[Exception], None]) -> None:
+        if not add and not remove:
+            return
+
+        async def go() -> None:
+            try:
+                await self.client.players.set_members(leader_id, add or None, remove or None)
+            except Exception as err:  # noqa: BLE001 - surfaced to the user by on_fail
+                log.error("changing group members failed: %s", err)
+                on_fail(err)
+
+        self.run(go())
