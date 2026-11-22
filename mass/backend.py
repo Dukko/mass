@@ -55,6 +55,7 @@ SLEEP_TIMER_SCHEMA = 34  # players/sleep_timer/*
 SOUND_EFFECTS_SCHEMA = 35  # music/sound_effects
 OVERLAY_SCHEMA = 35  # player_queues/overlay
 ANNOUNCEMENT_SCHEMA = 28  # players/cmd/play_announcement (older than our minimum)
+PLAYLIST_PAGING_SCHEMA = 93  # limit/offset/search on music/playlists/playlist_tracks
 PLAYLIST_MOVE_SCHEMA = 101  # music/playlists/move_playlist_track
 TYPED_SORT_SCHEMA = 86  # sort_field/sort_direction and music/sort_options
 EPISODE_PAGING_SCHEMA = 93  # podcast episode search/sort/paging
@@ -653,15 +654,34 @@ class Backend(GObject.Object):
 
         self.run(go())
 
-    async def playlist_tracks(self, playlist: Playlist) -> list[tuple[Any, int | None]]:
+    async def playlist_tracks(self, playlist: Playlist, *, force_refresh: bool = True, limit: int | None = None,
+                              offset: int | None = None, search: str | None = None) -> list[tuple[Any, int | None]]:
         """Tracks with the server's own playlist positions (the typed models drop them).
 
-        The position is None when the server did not supply one.
+        The position is None when the server did not supply one. `force_refresh` makes the server re-pull the
+        whole playlist from its provider; the cached copy is fine wherever positions don't matter.
+        `limit`, `offset` and `search` need PLAYLIST_PAGING_SCHEMA; older servers reject unknown arguments,
+        so they are only sent when set.
         """
+        args: dict[str, Any] = {"force_refresh": force_refresh}
+        for name, value in (("limit", limit), ("offset", offset), ("search", search or None)):
+            if value is not None:
+                args[name] = value
+        started = time.monotonic()
         raw = await self.client.send_command(
             "music/playlists/playlist_tracks", item_id=playlist.item_id,
-            provider_instance_id_or_domain=playlist.provider, force_refresh=True)
-        return [(media_from_dict(obj), obj.get("position")) for obj in raw]
+            provider_instance_id_or_domain=playlist.provider,
+            require_schema=PLAYLIST_PAGING_SCHEMA if len(args) > 1 else None, **args)
+        fetched = time.monotonic()
+        pairs: list[tuple[Any, int | None]] = []
+        for i, obj in enumerate(raw):
+            pairs.append((media_from_dict(obj), obj.get("position")))
+            if i % 250 == 249:
+                await asyncio.sleep(0)  # a long playlist must not freeze the UI while it is decoded
+        log.debug("playlist %s: %d tracks, fetch %.0f ms, decode %.0f ms (force_refresh=%s, args=%s)",
+                  playlist.item_id, len(pairs), (fetched - started) * 1000,
+                  (time.monotonic() - fetched) * 1000, force_refresh, sorted(args))
+        return pairs
 
     def remove_from_playlist(self, playlist: Playlist, positions: list[int], on_done: Callable[[], None],
                              on_fail: Callable[[Exception], None]) -> None:

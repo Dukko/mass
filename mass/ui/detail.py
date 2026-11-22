@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk
 from music_assistant_models.enums import MediaType, QueueOption
@@ -19,12 +20,18 @@ from .common import (
     media_menu_model,
     media_row,
 )
-from ..backend import PLAYLIST_MOVE_SCHEMA
+from ..backend import PLAYLIST_MOVE_SCHEMA, PLAYLIST_PAGING_SCHEMA
+from ..listing import matches_query
 from .expressive import Sym, sym_button
 from .library import CHANGE_DEBOUNCE_MS, subtitle_for
+from .media_list import MediaList
 from .motion import pop_in
+from .paging import PAGE
+from .playlist_tracks import EDITOR_MAX, WholeList
 from .reorder import AutoScroll, move_target, playlist_move, swallow_clicks
 
+FILTER_DEBOUNCE_MS = 150
+TRACK_PAGE = 200  # tracks per request when the server pages a playlist
 REMOVAL_FALLBACK_MS = 5000
 RELOAD_RETRY_MS = 3000
 RELOAD_TRIES = 3  # failed reloads tolerated while the page waits for a fresh track list
@@ -52,6 +59,7 @@ class DetailPage(Adw.NavigationPage):
         clamp.set_child(self.col)
         scroller.set_child(clamp)
         tv.set_content(scroller)
+        self._tv = tv
         self.set_child(tv)
 
         head = Gtk.Box(spacing=32)
@@ -84,7 +92,8 @@ class DetailPage(Adw.NavigationPage):
         btns.append(more)
         info.append(btns)
         head.append(info)
-        attach_media_actions(head, backend, lambda: self.item)
+        self._refresh_actions = attach_media_actions(head, backend, lambda: self.item)
+        self._head = head
         self.col.append(head)
 
         self.spinner = Adw.Spinner(height_request=40, margin_top=24)
@@ -104,6 +113,15 @@ class DetailPage(Adw.NavigationPage):
         self._changed_early = False  # the playlist's change event came before that answer
         self._removal_fallback = 0
         self._tracks_gen = 0
+        self._media_list: MediaList | None = None  # virtualized track list, for playlists too long to edit
+        self._filter_box: Gtk.Box | None = None
+        self._filter_bar: Gtk.Box | None = None
+        self._no_match: Gtk.Label | None = None
+        self._filter_source = 0
+        self._server_filter = False  # the virtualized list filters on the server rather than on loaded rows
+        self._query = ""
+        self._force_refresh = False  # the next virtualized fetches must bypass the server's cache
+        self._opened_at = 0.0
         self._change_source = 0
         self._changed_id = 0
         if item.media_type == MediaType.PLAYLIST:
@@ -123,6 +141,9 @@ class DetailPage(Adw.NavigationPage):
             self._change_source = 0
         self._cancel_removal_fallback()
         self._cancel_retry()
+        if self._filter_source:
+            GLib.source_remove(self._filter_source)
+            self._filter_source = 0
 
     def _on_media_changed(self, _b, _event: str, uri: str) -> None:
         if uri != self.item.uri:
@@ -150,6 +171,7 @@ class DetailPage(Adw.NavigationPage):
             log.debug("could not refresh %s: %s", it.uri, err)
             return
         self.item = full
+        self._refresh_actions()
         self.subtitle.set_label(subtitle_for(full))
         await self._reload_tracks()
 
@@ -341,7 +363,7 @@ class DetailPage(Adw.NavigationPage):
 
     def _drop_allowed(self, row: Gtk.ListBoxRow, y: float) -> int | None:
         """Insertion index for a drop at y on this row, or None where it can't land."""
-        if self._busy or self._drag_row not in self._order:
+        if self._busy or self._query or self._drag_row not in self._order:
             return None
         at = row.get_index() + (1 if y > row.get_height() / 2 else 0)
         return at if move_target(self._order.index(self._drag_row), at) else None
@@ -371,7 +393,7 @@ class DetailPage(Adw.NavigationPage):
             row.add_css_class(cls)
 
     def _on_key(self, _c, keyval: int, _code: int, state: Gdk.ModifierType) -> bool:
-        if not state & Gdk.ModifierType.ALT_MASK or keyval not in (Gdk.KEY_Up, Gdk.KEY_Down):
+        if self._query or not state & Gdk.ModifierType.ALT_MASK or keyval not in (Gdk.KEY_Up, Gdk.KEY_Down):
             return False
         row = self._lb.get_focus_child() if self._lb else None
         if row not in self._order:
@@ -383,12 +405,123 @@ class DetailPage(Adw.NavigationPage):
         return True
 
     async def _fetch_tracks(self) -> list[tuple]:
-        if self._can_edit():
-            return await self.backend.playlist_tracks(self.item)
-        tracks = await self.backend.client.music.get_playlist_tracks(self.item.item_id, self.item.provider)
-        return [(t, None) for t in tracks]
+        """The whole playlist straight from its provider: the editor needs the real positions."""
+        return await self.backend.playlist_tracks(self.item, force_refresh=True)
+
+    async def _open_tracks(self) -> None:
+        """Pick the track view: the editor for a small editable playlist, a virtualized list otherwise.
+
+        Reading the cached copy is enough to size an editable playlist; only the editor re-reads it
+        from the provider, because edits go by position.
+        """
+        self._opened_at = time.monotonic()
+        if not self._can_edit():
+            self._show_virtual()
+            return
+        self._tracks_gen += 1
+        gen = self._tracks_gen  # a change event or edit during the open supersedes this one
+        paged = self.backend.supports(PLAYLIST_PAGING_SCHEMA)
+        probe = await self.backend.playlist_tracks(self.item, force_refresh=False,
+                                                   limit=EDITOR_MAX + 1 if paged else None, offset=0 if paged else None)
+        if gen != self._tracks_gen:
+            return
+        if len(probe) > EDITOR_MAX:
+            self._show_virtual(None if paged else [t for t, _p in probe])
+            return
+        pairs = await self._fetch_tracks()
+        if gen == self._tracks_gen:
+            self._show_playlist_tracks(pairs)
+
+    def _take_force_refresh(self) -> bool:
+        """Whether this fetch must bypass the server's cache; only the first one after a reload does."""
+        force, self._force_refresh = self._force_refresh, False
+        return force
+
+    async def _fetch_page(self, offset: int, limit: int) -> list:
+        pairs = await self.backend.playlist_tracks(self.item, force_refresh=self._take_force_refresh(), limit=limit,
+                                                   offset=offset, search=self._query)
+        return [t for t, _p in pairs]
+
+    async def _fetch_all(self) -> list:
+        pairs = await self.backend.playlist_tracks(self.item, force_refresh=self._take_force_refresh())
+        return [t for t, _p in pairs]
+
+    def _show_virtual(self, primed: list | None = None) -> None:
+        self._server_filter = self.backend.supports(PLAYLIST_PAGING_SCHEMA)
+        if self._server_filter:
+            fetch, page = self._fetch_page, TRACK_PAGE
+        else:
+            fetch, page = WholeList(self._fetch_all, primed), PAGE
+        view = self._media_list = MediaList(self.backend, fetch, self._play_from, on_empty=self._on_list_empty,
+                                            page=page)
+        # a list inside another scroller would be laid out in full, so the page scrolls only this list
+        self.col.remove(self._head)
+        self.col.remove(self._filter_box)
+        top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        top.append(self._head)
+        top.append(self._filter_box)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.append(Adw.Clamp(maximum_size=980, margin_start=20, margin_end=20, margin_top=8, child=top))
+        outer.append(view)
+        self._tv.set_content(outer)
+
+    def _on_list_empty(self, empty: bool) -> None:
+        if self._opened_at:
+            log.debug("playlist %s: first rows %.0f ms after opening", self.item.item_id,
+                      (time.monotonic() - self._opened_at) * 1000)
+            self._opened_at = 0.0
+        self._filter_bar.set_visible(not empty or bool(self._query))
+        self._no_match.set_visible(empty and bool(self._query))
+
+    def _build_filter(self) -> None:
+        bar = self._filter_bar = Gtk.Box(spacing=12, visible=False)
+        bar.add_css_class("search-bar")
+        bar.append(Sym("search", 24))
+        entry = Gtk.Text(placeholder_text="Filter tracks", hexpand=True)
+        entry.connect("changed", self._on_filter_changed)
+        bar.append(entry)
+        self._no_match = label("No tracks match", "body-m", "on-variant", visible=False)
+        box = self._filter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.append(bar)
+        box.append(self._no_match)
+        self.col.insert_child_after(box, self.spinner.get_prev_sibling())
+
+    def _on_filter_changed(self, entry: Gtk.Text) -> None:
+        if self._filter_source:
+            GLib.source_remove(self._filter_source)
+        self._filter_source = GLib.timeout_add(FILTER_DEBOUNCE_MS, self._filter_timeout, entry.get_text())
+
+    def _filter_timeout(self, text: str) -> bool:
+        self._filter_source = 0
+        return self._apply_filter(text)
+
+    def _apply_filter(self, text: str) -> bool:
+        if self._filter_source:
+            GLib.source_remove(self._filter_source)
+            self._filter_source = 0
+        self._query = text.strip()
+        if self._media_list is not None:
+            if self._server_filter:
+                self._media_list.reset()
+            else:
+                self._media_list.set_query(self._query)
+            return False
+        shown = 0
+        for row in self._order:
+            match = matches_query(row.item, self._query)
+            row.set_visible(match)
+            shown += match
+        # reordering assumes the full list, so it is off while rows are hidden
+        for handle in self._handles:
+            handle.set_visible(not self._query and bool(self._order))
+        self._no_match.set_visible(bool(self._order) and not shown)
+        return False
 
     async def _reload_tracks(self) -> None:
+        if self._media_list is not None:
+            self._force_refresh = True
+            self._media_list.reset()
+            return
         self._tracks_gen += 1
         gen = self._tracks_gen
         try:
@@ -417,6 +550,8 @@ class DetailPage(Adw.NavigationPage):
         # a skipped (unresolvable) track leaves a gap in the server's positions; row order is only the fallback
         positions = [pos or i for i, (_t, pos) in enumerate(pairs, start=1)] if self._can_edit() else None
         self._add_tracks([t for t, _p in pairs], parent=self._tracks_slot, positions=positions)
+        self._filter_bar.set_visible(bool(pairs))
+        self._apply_filter(self._query)
         self._set_busy(False)
 
     def _shuffle(self) -> None:
@@ -436,6 +571,7 @@ class DetailPage(Adw.NavigationPage):
             log.debug("could not resolve %s: %s", getattr(it, "uri", it), err)
             return it
         self.item = full
+        self._refresh_actions()
         self.art.set_item(full)
         self.subtitle.set_label(subtitle_for(full))
         return full
@@ -486,8 +622,9 @@ class DetailPage(Adw.NavigationPage):
             elif it.media_type == MediaType.PLAYLIST:
                 if self._can_edit():
                     self._enable_playlist_editing()
+                self._build_filter()
                 self._tracks_slot = self._slot()
-                self._show_playlist_tracks(await self._fetch_tracks())
+                await self._open_tracks()
             elif it.media_type == MediaType.ARTIST:
                 await self._load_artist(it)
         finally:
