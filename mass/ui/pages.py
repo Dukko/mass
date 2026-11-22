@@ -7,9 +7,10 @@ from collections.abc import Callable
 from gi.repository import Adw
 from music_assistant_models.enums import MediaType
 
+from .browse import BrowsePage
 from .detail import DetailPage
 
-PAGES: dict[MediaType, Callable[..., Adw.NavigationPage]] = {}
+PAGES: dict[MediaType, Callable[..., Adw.NavigationPage]] = {MediaType.FOLDER: BrowsePage}
 
 
 def page_for(backend, item, open_item) -> Adw.NavigationPage:
