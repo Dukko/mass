@@ -10,10 +10,11 @@ from .dialogs import LoginDialog
 from .expressive import Sym
 from .dj import AIRadioView
 from .home import HomeView
-from .library import DetailPage, LibraryView
+from .library import LibraryView
 from .nowplaying import TABS as NP_TABS
 from .nowplaying import MiniPlayer, NowPlayingPage, is_playing, schedule_refresh
 from .motion import MotionBin, spring_stack
+from .pages import page_for
 from .splash import Splash
 from .players import PlayersView
 from .queue import QueuePage
@@ -349,7 +350,7 @@ class MainWindow(Adw.ApplicationWindow):
         dlg.present(self)
 
     def open_item(self, item) -> None:
-        self.nav.push(DetailPage(self.backend, item, self.open_item))
+        self.nav.push(page_for(self.backend, item, self.open_item))
 
     def focus_search(self) -> None:
         self.show_page("search")
