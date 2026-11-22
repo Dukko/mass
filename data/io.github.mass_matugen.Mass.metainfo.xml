@@ -63,7 +63,7 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="1.2.0" date="2026-11-21">
+    <release version="1.2.0" date="2026-11-22">
       <description>
         <ul>
           <li>Library search, favorites, sort and filters, saved per tab</li>
