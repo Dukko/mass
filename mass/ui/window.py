@@ -33,6 +33,14 @@ MENU_XML = """
     <item><attribute name="label">About Mass</attribute><attribute name="action">app.about</attribute></item>
   </section>
   <section>
+    <item><attribute name="label">Open web app</attribute><attribute name="action">app.webapp</attribute>
+      <attribute name="target" type="s">''</attribute></item>
+    <item><attribute name="label">Server settings</attribute><attribute name="action">app.webapp</attribute>
+      <attribute name="target" type="s">'settings'</attribute></item>
+    <item><attribute name="label">Providers</attribute><attribute name="action">app.webapp</attribute>
+      <attribute name="target" type="s">'settings/providers'</attribute></item>
+  </section>
+  <section>
     <item><attribute name="label">Quit</attribute><attribute name="action">app.quit</attribute></item>
   </section>
 </menu></interface>"""

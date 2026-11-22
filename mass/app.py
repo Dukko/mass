@@ -17,6 +17,7 @@ from .mpris import MprisServer
 from .notify import Notifier
 from .theme import ThemeManager
 from .tray import Tray
+from .ui import links
 from .ui.nowplaying import art_url, track_info
 from .updater import Updater
 
@@ -280,6 +281,10 @@ class MassApp(Adw.Application):
             ["<Ctrl>Down"])
         add("toggle-sheet", lambda: self.window.toggle_now_playing(), ["<Ctrl>n"])
         add("close-window", lambda: self.window.close(), ["<Ctrl>w"])
+
+        webapp = Gio.SimpleAction.new("webapp", GLib.VariantType.new("s"))
+        webapp.connect("activate", lambda _a, v: links.open_webapp(self.window, b, v.get_string()))
+        self.add_action(webapp)
 
     def _show_prefs(self) -> None:
         from .ui.dialogs import PreferencesDialog

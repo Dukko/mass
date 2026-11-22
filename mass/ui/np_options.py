@@ -12,7 +12,9 @@ import time
 from gi.repository import Gio, GLib, Gtk
 from music_assistant_models.enums import MediaType
 
+from .. import webapp
 from ..backend import ANNOUNCEMENT_SCHEMA, OVERLAY_SCHEMA, SLEEP_TIMER_SCHEMA
+from . import links
 from .common import ask_text, label, open_add_to_playlist
 from .expressive import Sym
 from .player_settings import DSPDialog, PlayerSettingsDialog
@@ -183,6 +185,12 @@ class NowPlayingOptions:
             self.host.activate_action("app.preferences", None)
             return
         p = self.backend.active_player
+        if what == "web":
+            if p:
+                links.open_webapp(self.host, self.backend, webapp.player_route(p.player_id))
+            elif hasattr(self.host, "toast"):
+                self.host.toast("No active player")
+            return
         if not p or not self.backend.client:
             return
         (DSPDialog if what == "dsp" else PlayerSettingsDialog)(self.backend, p.player_id, self.host)
@@ -289,6 +297,7 @@ class NowPlayingOptions:
         settings = Gio.Menu()
         settings.append("Player settings…", "np.settings::player")
         settings.append("Player DSP…", "np.settings::dsp")
+        settings.append("Player in web app…", "np.settings::web")
         settings.append("Mass preferences", "np.settings::app")
         main.append_submenu("Settings", settings)
         menu.append_section(None, main)

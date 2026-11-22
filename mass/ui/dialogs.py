@@ -10,7 +10,8 @@ from gi.repository import Adw, GLib, Gtk
 from .. import APP_ID, APP_NAME
 from ..host import HOST_CONFIG, launch_cmd
 from ..discovery import discover
-from .. import firewall
+from .. import firewall, webapp
+from . import links
 from .common import ask_text, label, m3_list, media_row, status_page
 from .expressive import Sym
 
@@ -253,6 +254,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
         signout.connect("clicked", self._signout)
         self.server_row.add_suffix(signout)
         srv.add(self.server_row)
+        if app.backend.connected:
+            srv.add(self._webapp_expander())
         page.add(srv)
 
         look = Adw.PreferencesGroup(title="Appearance",
@@ -444,6 +447,21 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _copy_fw_cmd(self, *_):
         self.get_clipboard().set(self._fw_cmd)
         self.add_toast(Adw.Toast(title="Command copied — run it in a terminal"))
+
+    def _webapp_expander(self) -> Adw.ExpanderRow:
+        b = self.app.backend
+        expander = Adw.ExpanderRow(title="Music Assistant web app")
+        entries = [("Open web app", ""), ("Server settings", webapp.ROUTE_SETTINGS),
+                   ("Providers", webapp.ROUTE_PROVIDERS), ("Users", webapp.ROUTE_USERS),
+                   ("Statistics", webapp.ROUTE_STATISTICS)]
+        if b.client and any(p.domain == "party" for p in b.client.providers):
+            entries.append(("Party mode", webapp.ROUTE_PARTY))
+        for title, route in entries:
+            row = Adw.ActionRow(title=title, activatable=True)
+            row.add_suffix(Gtk.Image.new_from_icon_name("external-link-symbolic"))
+            row.connect("activated", lambda _r, route=route: links.open_webapp(self, b, route))
+            expander.add_row(row)
+        return expander
 
     def _signout(self, *_):
         async def go():
