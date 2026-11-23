@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from collections import OrderedDict
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
@@ -35,6 +36,63 @@ SHAPE_FOR = {
     MediaType.PODCAST_EPISODE: "clover",
     MediaType.FOLDER: "square",
 }
+
+
+def weak_method(obj: object, name: str):
+    """A callback to `obj.<name>` that does not keep `obj` alive.
+
+    A page that hands its own bound methods to widgets it owns, or to longer-lived objects, forms a
+    cycle through GTK that Python's collector cannot break, so the popped page would never be freed.
+    Once `obj` is gone the callback does nothing and returns None. A widget must be held by
+    something in Python for this to find it: see `retain_while_rooted`.
+    """
+    ref = weakref.ref(obj)
+
+    def call(*args, **kwargs):
+        target = ref()
+        return getattr(target, name)(*args, **kwargs) if target is not None else None
+
+    return call
+
+
+def retain_while_rooted(widget: Gtk.Widget) -> None:
+    """Keep `widget`'s Python wrapper alive for as long as it sits in a window.
+
+    PyGObject drops a wrapper that nothing in Python refers to, even while GTK still owns the
+    widget, and a `weak_method` on that wrapper would then silently stop firing. Retaining the
+    wrapper from its creation until it leaves the window lets the widget's own children call back
+    into it weakly, so a popped widget is still freed.
+    """
+    widget._retained = widget
+    state = {"rooted": False}
+
+    def on_root(w: Gtk.Widget, _pspec) -> None:
+        if w.get_root() is not None:
+            state["rooted"] = True
+            w._retained = w
+        elif state["rooted"]:
+            w._retained = None
+
+    widget.connect_after("notify::root", on_root)
+
+
+def connect_weak(emitter: GObject.Object, signal: str, obj: object, name: str) -> int:
+    """`emitter.connect(signal, ...)` to `obj.<name>` without keeping `obj` alive.
+
+    A popped page can be freed before it gets the chance to disconnect, so the handler also drops
+    itself the first time the signal fires after `obj` is gone. Returns the handler id.
+    """
+    ref = weakref.ref(obj)
+
+    def call(*args):
+        target = ref()
+        if target is None:
+            emitter.disconnect(handler_id)
+            return None
+        return getattr(target, name)(*args)
+
+    handler_id = emitter.connect(signal, call)
+    return handler_id
 
 
 def fmt_time(seconds: float | None) -> str:
@@ -177,6 +235,9 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item):
     Returns a refresh callable: call it whenever get_item() starts returning a different item
     so item-dependent actions (add to playlist) enable or disable accordingly.
     """
+    # The handlers live on the actions, which live on the widget. Holding the widget or the actions
+    # strongly from them would form a cycle through GTK that Python's collector cannot break, so they
+    # reach the window through the application and `refresh` through a weak reference.
     group = Gio.SimpleActionGroup()
 
     def add(name, option, radio=False):
@@ -200,14 +261,20 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item):
     add("add", QueueOption.ADD)
     add("radio", None, radio=True)
 
+    def add_to_playlist(*_) -> None:
+        if (item := get_item()) is not None and (window := app_window()) is not None:
+            open_add_to_playlist(window, backend, [item])
+
     playlist = Gio.SimpleAction.new("playlist", None)
-    playlist.connect("activate", lambda *_: (item := get_item()) is not None and open_add_to_playlist(widget, backend, [item]))
+    playlist.connect("activate", add_to_playlist)
     group.add_action(playlist)
 
     def toast(message: str) -> None:
-        root = widget.get_root()
-        if hasattr(root, "toast"):
-            root.toast(message)
+        window = app_window()
+        if hasattr(window, "toast"):
+            window.toast(message)
+
+    refresh_ref: weakref.ref
 
     def set_favorite(on: bool) -> None:
         item = get_item()
@@ -216,7 +283,8 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item):
 
         def done(_ok: bool) -> None:
             item.favorite = on
-            refresh()
+            if (refresh := refresh_ref()) is not None:
+                refresh()
             toast("Added to favorites" if on else "Removed from favorites")
 
         backend.toggle_favorite(item, on, done, lambda _err: toast("Couldn't update favorites"))
@@ -231,9 +299,9 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item):
     def open_target(pick) -> None:
         item = get_item()
         target = pick(item) if item is not None else None
-        root = widget.get_root()
-        if target is not None and hasattr(root, "open_item"):
-            root.open_item(target)
+        window = app_window()
+        if target is not None and hasattr(window, "open_item"):
+            window.open_item(target)
 
     album = Gio.SimpleAction.new("album", None)
     album.connect("activate", lambda *_: open_target(_item_album))
@@ -242,28 +310,37 @@ def attach_media_actions(widget: Gtk.Widget, backend, get_item):
     artist.connect("activate", lambda *_: open_target(_item_artist))
     group.add_action(artist)
 
+    def open_in_webapp(*_) -> None:
+        if (item := get_item()) is not None and (window := app_window()) is not None:
+            open_webapp(window, backend, item_route(item) or "")
+
     webapp = Gio.SimpleAction.new("webapp", None)
-    webapp.connect(
-        "activate",
-        lambda *_: (item := get_item()) is not None and open_webapp(widget, backend, item_route(item) or ""),
-    )
+    webapp.connect("activate", open_in_webapp)
     group.add_action(webapp)
 
     def refresh() -> None:
         item = get_item()
         media_type = getattr(item, "media_type", None)
-        playlist.set_enabled(media_type in PLAYLIST_ADDABLE)
         favoritable = media_type in FAVORITABLE
         is_fav = bool(getattr(item, "favorite", False))
+        playlist.set_enabled(media_type in PLAYLIST_ADDABLE)
         favorite.set_enabled(favoritable and not is_fav)
         unfavorite.set_enabled(favoritable and is_fav)
         album.set_enabled(_item_album(item) is not None)
         artist.set_enabled(_item_artist(item) is not None)
         webapp.set_enabled(item is not None and item_route(item) is not None)
 
+    refresh_ref = weakref.ref(refresh)
+    widget.media_actions_refresh = refresh  # the actions only hold it weakly
     refresh()
     widget.insert_action_group("media", group)
     return refresh
+
+
+def app_window() -> Gtk.Window | None:
+    """The application's window, for handlers that must not hold on to the widget that owns them."""
+    app = Gio.Application.get_default()
+    return app.get_active_window() if isinstance(app, Gtk.Application) else None
 
 
 def _item_album(item):

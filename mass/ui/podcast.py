@@ -9,7 +9,7 @@ from music_assistant_models.enums import QueueOption
 from music_assistant_models.media_items import ItemMapping
 
 from ..backend import EPISODE_PAGING_SCHEMA
-from .common import ArtImage, fmt_time, label, retry_page, status_page
+from .common import ArtImage, fmt_time, label, retain_while_rooted, retry_page, status_page, weak_method
 from .expressive import Sym, sym_button
 from .media_list import MediaList
 from .playlist_tracks import WholeList
@@ -52,9 +52,10 @@ class PodcastPage(Adw.NavigationPage):
 
     def __init__(self, backend, podcast, open_item) -> None:
         super().__init__(title=podcast.name)
+        retain_while_rooted(self)
         self.backend, self.item, self.open_item = backend, podcast, open_item
         self._fav_on = self._fav_busy = self._fav_loaded = False
-        self._whole = WholeList(self._load_all)
+        self._whole = WholeList(weak_method(self, "_load_all"))
 
         tv = Adw.ToolbarView()
         hb = Adw.HeaderBar(show_title=False)
@@ -63,11 +64,11 @@ class PodcastPage(Adw.NavigationPage):
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         body.append(Adw.Clamp(maximum_size=980, margin_start=20, margin_end=20, child=self._hero(podcast)))
         self.stack = Gtk.Stack(vexpand=True)
-        self.episodes = MediaList(backend, self._fetch, self._play, subtitle=episode_subtitle,
-                                  on_empty=self._on_empty)
+        self.episodes = MediaList(backend, weak_method(self, "_fetch"), weak_method(self, "_play"),
+                                  subtitle=episode_subtitle, on_empty=weak_method(self, "_on_empty"))
         self.stack.add_named(self.episodes, "list")
         self.stack.add_named(status_page("microphone-sensitivity-high-symbolic", "No episodes found"), "empty")
-        self.stack.add_named(retry_page("Couldn’t load episodes", self._retry), "error")
+        self.stack.add_named(retry_page("Couldn’t load episodes", weak_method(self, "_retry")), "error")
         body.append(self.stack)
         tv.set_content(body)
         self.set_child(tv)
@@ -93,10 +94,10 @@ class PodcastPage(Adw.NavigationPage):
         pb.append(Sym("play_arrow", 24, fill=True))
         pb.append(Gtk.Label(label="Play latest"))
         self.play_btn.set_child(pb)
-        self.play_btn.connect("clicked", lambda *_: self._play_latest())
+        self.play_btn.connect("clicked", weak_method(self, "_play_latest"))
         btns.append(self.play_btn)
         self.fav = sym_button("favorite", "Add to favorites", ("m3", "icon", "large", "toggle"),
-                              cb=self._toggle_favorite)
+                              cb=weak_method(self, "_toggle_favorite"))
         self.fav.set_visible(False)
         btns.append(self.fav)
         info.append(btns)
@@ -142,7 +143,7 @@ class PodcastPage(Adw.NavigationPage):
             raise
 
     def _retry(self) -> None:
-        self._whole = WholeList(self._load_all)
+        self._whole = WholeList(weak_method(self, "_load_all"))
         self.episodes.reset()
         self.stack.set_visible_child_name("list")
 
@@ -153,7 +154,7 @@ class PodcastPage(Adw.NavigationPage):
     def _play(self, episode) -> None:
         self.backend.play_media(episode, option=QueueOption.PLAY)
 
-    def _play_latest(self) -> None:
+    def _play_latest(self, *_) -> None:
         store = self.episodes.store
         latest = latest_episode([store.get_item(i).item for i in range(store.get_n_items())])
         if latest is not None:

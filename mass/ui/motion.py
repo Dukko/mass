@@ -15,6 +15,7 @@ import math
 
 from gi.repository import Adw, GLib, Graphene, Gtk
 
+from .common import retain_while_rooted, weak_method
 from .expressive import SPRINGS
 
 # Non-spring timings (ms), shared by CSS and Adw animations.
@@ -41,12 +42,13 @@ class MotionBin(Gtk.Widget):
     def __init__(self, child: Gtk.Widget | None = None, dy: float = 24.0, dx: float = 0.0,
                  scale: float = 0.96, preset: str = "expressive", **kw) -> None:
         super().__init__(**kw)
+        retain_while_rooted(self)
         self.set_layout_manager(Gtk.BinLayout())
         self.dy, self.dx, self.scale0, self.preset = dy, dx, scale, preset
         self.progress = 1.0
         self._delay_src = 0
         self._anim = Adw.SpringAnimation.new(self, 0.0, 1.0, spring_params(preset),
-                                             Adw.CallbackAnimationTarget.new(self._on_value))
+                                             Adw.CallbackAnimationTarget.new(weak_method(self, "_on_value")))
         self._anim.set_clamp(False)
         self.child = None
         if child is not None:
@@ -170,15 +172,15 @@ def pop_in(widget: Gtk.Widget, delay_ms: int = 0, dy: float = 16.0, scale: float
                      valign=widget.get_valign())
     bin_.progress = 0.0
 
-    def on_map(*_):
+    def on_map(mapped: MotionBin, *_):  # not `bin_`: a handler holding its own widget leaks it
         if handler[0]:
-            bin_.disconnect(handler[0])
+            mapped.disconnect(handler[0])
             handler[0] = 0
-        bin_.play(delay_ms)
+        mapped.play(delay_ms)
 
     handler = [0]
     if bin_.get_mapped():
-        on_map()
+        on_map(bin_)
     else:
         handler[0] = bin_.connect("map", on_map)  # once: don't replay when the page is revisited
     return bin_

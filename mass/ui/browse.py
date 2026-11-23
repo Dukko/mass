@@ -8,7 +8,7 @@ from gi.repository import Adw, GLib, Gtk
 from music_assistant_models.enums import MediaType
 
 from ..backend import BROWSE_PAGING_SCHEMA
-from .common import ItemObject, m3_list, media_row, status_page
+from .common import ItemObject, connect_weak, m3_list, media_row, retain_while_rooted, status_page, weak_method
 from .expressive import Sym
 from .media_list import MediaList
 from .paging import PAGE, Pager
@@ -41,6 +41,7 @@ class BrowseList(Gtk.Stack):
 
     def __init__(self, backend, path: str | None, open_item) -> None:
         super().__init__(vexpand=True)
+        retain_while_rooted(self)
         self.backend, self.path, self.open_item = backend, path, open_item
         paged = backend.supports(BROWSE_PAGING_SCHEMA)
         self._pager = Pager(self._fetch, self._on_items, backend.run, page=PAGE if paged else UNPAGED)
@@ -60,25 +61,28 @@ class BrowseList(Gtk.Stack):
         clamp.set_child(self.list)
         self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
         self.add_named(self.scroller, "list")
-        self.big = MediaList(backend, _no_more, self._activate, subtitle_for,
+        self.big = MediaList(backend, _no_more, weak_method(self, "_activate"), subtitle_for,
                           menu=lambda item: item.media_type != MediaType.FOLDER)
         self.add_named(self.big, "big")
         self.add_named(status_page("folder-symbolic", "Nothing to browse here"), "empty")
         self.error = status_page("dialog-error-symbolic", "Couldn't load this folder")
         retry = Gtk.Button(label="Retry", halign=Gtk.Align.CENTER)
         retry.add_css_class("pill")
-        retry.connect("clicked", lambda _b: self.reset())
+        retry.connect("clicked", weak_method(self, "_on_retry"))
         self.error.set_child(retry)
         self.add_named(self.error, "error")
 
-        self.scroller.get_vadjustment().connect("value-changed", self._on_scroll)
-        self.big.get_vadjustment().connect("value-changed", self._on_scroll)
-        self.connect("map", self._on_map)
-        self.connect("unmap", self._on_unmap)
+        self.scroller.get_vadjustment().connect("value-changed", weak_method(self, "_on_scroll"))
+        self.big.get_vadjustment().connect("value-changed", weak_method(self, "_on_scroll"))
+        self.connect("map", weak_method(self, "_on_map"))
+        self.connect("unmap", weak_method(self, "_on_unmap"))
+
+    def _on_retry(self, _button) -> None:
+        self.reset()
 
     def _on_map(self, _w) -> None:
         if not self._status_handler:
-            self._status_handler = self.backend.connect("status-changed", self._on_status)
+            self._status_handler = connect_weak(self.backend, "status-changed", self, "_on_status")
         self._first_load()
 
     def _on_unmap(self, _w) -> None:

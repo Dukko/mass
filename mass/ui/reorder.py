@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from gi.repository import GLib, Gtk
 
+from .common import weak_method
+
 AUTOSCROLL_EDGE = 48  # px from the scroller's top/bottom where a drag starts scrolling
 
 
@@ -47,9 +49,15 @@ class AutoScroll:
         self._y: float | None = None  # pointer y over the scroller during a drag
         self._source = 0
         motion = Gtk.DropControllerMotion()
-        motion.connect("motion", lambda _c, _x, y: self.update(y))
-        motion.connect("leave", lambda *_: self.update(None))
+        motion.connect("motion", weak_method(self, "_on_motion"))
+        motion.connect("leave", weak_method(self, "_on_leave"))
         scroller.add_controller(motion)
+
+    def _on_motion(self, _controller, _x: float, y: float) -> None:
+        self.update(y)
+
+    def _on_leave(self, *_) -> None:
+        self.update(None)
 
     def update(self, y: float | None) -> None:
         self._y = y

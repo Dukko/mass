@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from functools import partial
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk
 from music_assistant_models.enums import MediaType, QueueOption
@@ -14,11 +15,14 @@ from .common import (
     ArtImage,
     artists_str,
     attach_media_actions,
+    connect_weak,
     fmt_time,
     label,
     m3_list,
     media_menu_model,
     media_row,
+    retain_while_rooted,
+    weak_method,
 )
 from ..backend import ARTIST_EXTRAS_SCHEMA, FAVORITABLE, PLAYLIST_MOVE_SCHEMA, PLAYLIST_PAGING_SCHEMA
 from ..listing import matches_query
@@ -47,6 +51,7 @@ class DetailPage(Adw.NavigationPage):
 
     def __init__(self, backend, item, open_item) -> None:
         super().__init__(title=item.name)
+        retain_while_rooted(self)
         self.backend, self.item, self.open_item = backend, item, open_item
         tv = Adw.ToolbarView()
         hb = Adw.HeaderBar(show_title=False)
@@ -82,10 +87,11 @@ class DetailPage(Adw.NavigationPage):
         pb.append(Gtk.Label(label="Play"))
         play.set_child(pb)
         btns.append(play)
-        btns.append(sym_button("shuffle", "Shuffle", ("m3", "icon", "large", "tonal"), cb=self._shuffle))
+        btns.append(sym_button("shuffle", "Shuffle", ("m3", "icon", "large", "tonal"),
+                               cb=weak_method(self, "_shuffle")))
         btns.append(sym_button("radio", "Start radio", ("m3", "icon", "large", "tonal"), action="media.radio"))
         self._fav = sym_button("favorite", "Add to favorites", ("m3", "icon", "large", "toggle"),
-                               cb=self._toggle_favorite)
+                               cb=weak_method(self, "_toggle_favorite"))
         self._fav.set_visible(False)
         self._fav_on = self._fav_busy = self._fav_loaded = False
         btns.append(self._fav)
@@ -97,7 +103,7 @@ class DetailPage(Adw.NavigationPage):
         btns.append(more)
         info.append(btns)
         head.append(info)
-        self._refresh_actions = attach_media_actions(head, backend, self._action_item)
+        self._refresh_actions = attach_media_actions(head, backend, weak_method(self, "_action_item"))
         self._head = head
         self.col.append(head)
 
@@ -130,8 +136,8 @@ class DetailPage(Adw.NavigationPage):
         self._change_source = 0
         self._changed_id = 0
         if item.media_type == MediaType.PLAYLIST:
-            self._changed_id = backend.connect("media-item-changed", self._on_media_changed)
-            self.connect("notify::root", self._on_root_changed)
+            self._changed_id = connect_weak(backend, "media-item-changed", self, "_on_media_changed")
+            self.connect("notify::root", weak_method(self, "_on_root_changed"))
         backend.run(self._load())
 
     def _on_root_changed(self, *_) -> None:
@@ -193,14 +199,14 @@ class DetailPage(Adw.NavigationPage):
     def _enable_playlist_editing(self) -> None:
         group = Gio.SimpleActionGroup()
         delete = Gio.SimpleAction.new("delete", None)
-        delete.connect("activate", lambda *_: self._confirm_delete())
+        delete.connect("activate", weak_method(self, "_confirm_delete"))
         group.add_action(delete)
         self.insert_action_group("page", group)
         section = Gio.Menu()
         section.append("Delete playlist", "page.delete")
         self._menu.append_section(None, section)
 
-    def _confirm_delete(self) -> None:
+    def _confirm_delete(self, *_) -> None:
         dlg = Adw.AlertDialog(heading="Delete playlist?",
                               body=f"“{self.item.name}” will be removed from your library. This can't be undone.")
         dlg.add_response("cancel", "Cancel")
@@ -208,8 +214,12 @@ class DetailPage(Adw.NavigationPage):
         dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
         dlg.set_default_response("cancel")
         dlg.set_close_response("cancel")
-        dlg.connect("response", lambda _d, r: r == "delete" and self._delete())
+        dlg.connect("response", weak_method(self, "_on_delete_response"))
         dlg.present(self.get_root())
+
+    def _on_delete_response(self, _dlg, response: str) -> None:
+        if response == "delete":
+            self._delete()
 
     def _delete(self) -> None:
         name = self.item.name
@@ -330,27 +340,32 @@ class DetailPage(Adw.NavigationPage):
         if self._busy:
             handle.add_css_class("locked")
         src = Gtk.DragSource(actions=Gdk.DragAction.MOVE)
-        src.connect("prepare", self._drag_prepare, row)
-        src.connect("drag-begin", self._drag_begin, row, handle)
-        src.connect("drag-end", lambda *_: self._drag_end())
+        src.connect("prepare", weak_method(self, "_drag_prepare"))
+        src.connect("drag-begin", weak_method(self, "_drag_begin"))
+        src.connect("drag-end", weak_method(self, "_drag_end"))
         handle.add_controller(src)
         swallow_clicks(handle, src)
         row.get_child().prepend(handle)
         self._handles.append(handle)
         drop = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
-        drop.connect("motion", self._drop_motion, row)
-        drop.connect("leave", lambda *_: self._mark_drop(None, ""))
-        drop.connect("drop", self._on_drop, row)
+        drop.connect("motion", weak_method(self, "_drop_motion"))
+        drop.connect("leave", weak_method(self, "_drop_leave"))
+        drop.connect("drop", weak_method(self, "_on_drop"))
         row.add_controller(drop)
 
-    def _drag_prepare(self, _src, x: float, y: float, row: Gtk.ListBoxRow) -> Gdk.ContentProvider | None:
+    # The drag and drop handlers find their row from the controller's widget: passing the row as
+    # handler data would make the row hold itself alive through its own controllers.
+    def _drag_prepare(self, src: Gtk.DragSource, x: float, y: float) -> Gdk.ContentProvider | None:
         if self._busy:
             return None
+        row = src.get_widget().get_ancestor(Gtk.ListBoxRow)
         self._drag_row = row
         row.hot_spot = (x, y)
         return Gdk.ContentProvider.new_for_value(str(row.position))
 
-    def _drag_begin(self, src: Gtk.DragSource, _drag, row: Gtk.ListBoxRow, handle: Gtk.Widget) -> None:
+    def _drag_begin(self, src: Gtk.DragSource, _drag) -> None:
+        handle = src.get_widget()
+        row = handle.get_ancestor(Gtk.ListBoxRow)
         src.set_icon(Gtk.WidgetPaintable.new(row).get_current_image(), *self._hot_spot(row, handle))
         row.add_css_class("dragging")
 
@@ -359,7 +374,10 @@ class DetailPage(Adw.NavigationPage):
         ok, pt = handle.compute_point(row, Graphene.Point().init(*row.hot_spot))
         return (int(pt.x), int(pt.y)) if ok else (0, 0)
 
-    def _drag_end(self) -> None:
+    def _drop_leave(self, *_) -> None:
+        self._mark_drop(None, "")
+
+    def _drag_end(self, *_) -> None:
         if self._drag_row is not None:
             self._drag_row.remove_css_class("dragging")
         self._drag_row = None
@@ -373,7 +391,8 @@ class DetailPage(Adw.NavigationPage):
         at = row.get_index() + (1 if y > row.get_height() / 2 else 0)
         return at if move_target(self._order.index(self._drag_row), at) else None
 
-    def _drop_motion(self, _t, _x: float, y: float, row: Gtk.ListBoxRow) -> Gdk.DragAction:
+    def _drop_motion(self, target: Gtk.DropTarget, _x: float, y: float) -> Gdk.DragAction:
+        row = target.get_widget()
         at = self._drop_allowed(row, y)
         if at is None:
             self._mark_drop(None, "")
@@ -381,7 +400,8 @@ class DetailPage(Adw.NavigationPage):
         self._mark_drop(row, "drop-below" if at > row.get_index() else "drop-above")
         return Gdk.DragAction.MOVE
 
-    def _on_drop(self, _t, value: str, _x: float, y: float, row: Gtk.ListBoxRow) -> bool:
+    def _on_drop(self, target: Gtk.DropTarget, value: str, _x: float, y: float) -> bool:
+        row = target.get_widget()
         at = self._drop_allowed(row, y)
         self._mark_drop(None, "")
         if at is None or value != str(self._drag_row.position):
@@ -454,11 +474,11 @@ class DetailPage(Adw.NavigationPage):
     def _show_virtual(self, primed: list | None = None) -> None:
         self._server_filter = self.backend.supports(PLAYLIST_PAGING_SCHEMA)
         if self._server_filter:
-            fetch, page = self._fetch_page, TRACK_PAGE
+            fetch, page = weak_method(self, "_fetch_page"), TRACK_PAGE
         else:
-            fetch, page = WholeList(self._fetch_all, primed), PAGE
-        view = self._media_list = MediaList(self.backend, fetch, self._play_from, on_empty=self._on_list_empty,
-                                            page=page)
+            fetch, page = WholeList(weak_method(self, "_fetch_all"), primed), PAGE
+        view = self._media_list = MediaList(self.backend, fetch, weak_method(self, "_play_from"),
+                                            on_empty=weak_method(self, "_on_list_empty"), page=page)
         # a list inside another scroller would be laid out in full, so the page scrolls only this list
         self.col.remove(self._head)
         self.col.remove(self._filter_box)
@@ -483,7 +503,7 @@ class DetailPage(Adw.NavigationPage):
         bar.add_css_class("search-bar")
         bar.append(Sym("search", 24))
         entry = Gtk.Text(placeholder_text="Filter tracks", hexpand=True)
-        entry.connect("changed", self._on_filter_changed)
+        entry.connect("changed", weak_method(self, "_on_filter_changed"))
         bar.append(entry)
         self._no_match = label("No tracks match", "body-m", "on-variant", visible=False)
         box = self._filter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -773,6 +793,9 @@ class DetailPage(Adw.NavigationPage):
             jobs += [appears_on(), similar()]
         await asyncio.gather(*jobs)
 
+    def _open_tile(self, _flow, child) -> None:
+        self.open_item(child.get_child().album)
+
     def _artist_grid(self, artists, parent: Gtk.Box) -> None:
         flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=8,
                            min_children_per_line=2, homogeneous=True, activate_on_single_click=True)
@@ -786,7 +809,7 @@ class DetailPage(Adw.NavigationPage):
             tile = pop_in(card, delay_ms=min(i, 12) * 35)
             tile.album = a
             flow.append(tile)
-        flow.connect("child-activated", lambda _f, ch: self.open_item(ch.get_child().album))
+        flow.connect("child-activated", weak_method(self, "_open_tile"))
         parent.append(flow)
 
     def _album_grid(self, albums, parent: Gtk.Box | None = None) -> None:
@@ -803,7 +826,7 @@ class DetailPage(Adw.NavigationPage):
             tile = pop_in(card, delay_ms=min(i, 12) * 35)  # staggered, settling with a bounce
             tile.album = a
             flow.append(tile)
-        flow.connect("child-activated", lambda _f, ch: self.open_item(ch.get_child().album))
+        flow.connect("child-activated", weak_method(self, "_open_tile"))
         (parent or self.col).append(flow)
 
     def _about(self, it) -> None:
@@ -841,9 +864,10 @@ class DetailPage(Adw.NavigationPage):
                              xalign=0.5, width_chars=2, ellipsize=False)
             row = media_row(self.backend, t, artists_str(t), art=not numbered, leading=lead,
                             trailing_text=fmt_time(t.duration) if t.duration else "", play_button=False,
-                            on_activate=self._play_from)
+                            on_activate=weak_method(self, "_play_from"))
             if positions is not None:
-                rm = sym_button("playlist_remove", "Remove from playlist", cb=lambda p=positions[i]: self._remove_track(p))
+                rm = sym_button("playlist_remove", "Remove from playlist",
+                                cb=partial(weak_method(self, "_remove_track"), positions[i]))
                 rm.set_sensitive(not self._busy)
                 self._remove_buttons.append(rm)
                 row.get_child().append(rm)
@@ -856,7 +880,7 @@ class DetailPage(Adw.NavigationPage):
             self._lb = lb
             if self._can_reorder():
                 keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
-                keys.connect("key-pressed", self._on_key)
+                keys.connect("key-pressed", weak_method(self, "_on_key"))
                 lb.add_controller(keys)
         (parent or self.col).append(pop_in(lb, dy=20, scale=0.98, preset="expressive"))
 

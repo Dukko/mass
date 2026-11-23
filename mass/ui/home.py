@@ -42,6 +42,8 @@ class Carousel(Gtk.Box):
         while c := self.row.get_first_child():
             self.row.remove(c)
         seen = set()
+        # the handlers take these rather than `self`: a card that holds its own carousel leaks it
+        open_item, play_media = self.open_item, self.backend.play_media
         for it in items:
             if it.uri in seen:
                 continue
@@ -59,9 +61,9 @@ class Carousel(Gtk.Box):
             col.set_size_request(self.size, -1)
             btn.set_child(col)
             if it.media_type in OPENABLE:
-                btn.connect("clicked", lambda _b, i=it: self.open_item(i))
+                btn.connect("clicked", lambda _b, i=it: open_item(i))
             else:
-                btn.connect("clicked", lambda _b, i=it: self.backend.play_media(i))
+                btn.connect("clicked", lambda _b, i=it: play_media(i))
             self.row.append(btn)
         self.set_visible(bool(seen))
 

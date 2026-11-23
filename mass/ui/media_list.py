@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 from gi.repository import Adw, Gio, Gtk
 
 from ..listing import matches_query
-from .common import ArtImage, ItemObject, artists_str, attach_media_actions, fmt_time, label, media_menu_button
+from .common import (
+    ArtImage,
+    ItemObject,
+    artists_str,
+    attach_media_actions,
+    fmt_time,
+    label,
+    media_menu_button,
+    retain_while_rooted,
+    weak_method,
+)
 from .paging import PAGE, Pager
 
 
@@ -31,25 +42,33 @@ class MediaList(Gtk.ScrolledWindow):
                  menu: bool | Callable[[Any], bool] = True,
                  on_empty: Callable[[bool], None] | None = None, page: int = PAGE) -> None:
         super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        retain_while_rooted(self)
         self.backend, self.on_activate, self.subtitle, self.menu = backend, on_activate, subtitle, menu
         self.on_empty = on_empty
         self.query = ""
         self.store = Gio.ListStore(item_type=ItemObject)
-        self._filter = Gtk.CustomFilter.new(self._matches)
+        self._filter = Gtk.CustomFilter.new(weak_method(self, "_matches"))
         self.model = Gtk.FilterListModel(model=self.store, filter=self._filter)
         self._pager = Pager(fetch, self._on_items, backend.run, page)
 
         factory = Gtk.SignalListItemFactory()
-        factory.connect("setup", self._setup)
-        factory.connect("bind", self._bind)
+        factory.connect("setup", weak_method(self, "_setup"))
+        factory.connect("bind", weak_method(self, "_bind"))
         self.view = Gtk.ListView(model=Gtk.NoSelection(model=self.model), factory=factory,
                                  single_click_activate=True)
         self.view.add_css_class("m3-list")
         self.view.add_css_class("full")
-        self.view.connect("activate", lambda _v, pos: self.on_activate(self.model.get_item(pos).item))
+        self.view.connect("activate", weak_method(self, "_on_row_activated"))
         self.set_child(Adw.ClampScrollable(maximum_size=980, child=self.view))
-        self.get_vadjustment().connect("value-changed", self._on_scroll)
-        self.connect("map", lambda *_: self._pager.loaded_once or self.load_more())
+        self.get_vadjustment().connect("value-changed", weak_method(self, "_on_scroll"))
+        self.connect("map", weak_method(self, "_on_map"))
+
+    def _on_row_activated(self, _view, pos: int) -> None:
+        self.on_activate(self.model.get_item(pos).item)
+
+    def _on_map(self, _w) -> None:
+        if not self._pager.loaded_once:
+            self.load_more()
 
     def _matches(self, obj: ItemObject) -> bool:
         return matches_query(obj.item, self.query)
@@ -71,15 +90,15 @@ class MediaList(Gtk.ScrolledWindow):
         if box.menu_button is not None:
             box.append(box.menu_button)
         box.parts = (art, title, sub, duration)
-        box.current = None
-        box.refresh_actions = attach_media_actions(box, self.backend, lambda: box.current)
+        slot = box.slot = SimpleNamespace(item=None)  # a closure over `box` would keep it alive from its own actions
+        box.refresh_actions = attach_media_actions(box, self.backend, lambda: slot.item)
         li.set_child(box)
 
     def _bind(self, _f, li) -> None:
         box = li.get_child()
         item = li.get_item().item
         art, title, sub, duration = box.parts
-        box.current = item
+        box.slot.item = item
         box.refresh_actions()
         if box.menu_button is not None and callable(self.menu):
             box.menu_button.set_visible(bool(self.menu(item)))

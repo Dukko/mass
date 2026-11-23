@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import logging
-import weakref
 
 from gi.repository import Adw, Gdk, GLib, Graphene, Gsk, Gtk
 from music_assistant_models.enums import QueueOption, SortDirection, SortField
 
-from .common import ArtImage, label, retry_page, status_page
+from .common import ArtImage, label, retain_while_rooted, retry_page, status_page, weak_method
 from .expressive import Sym
 from .home import Carousel
 from .library import library_sort
@@ -19,21 +18,6 @@ log = logging.getLogger(__name__)
 
 ALBUMS_SHOWN = 50
 ALBUM_TILE = 120
-
-
-def _weak(obj: object, name: str):
-    """A callback to `obj.<name>` that does not keep `obj` alive.
-
-    A page that hands its own bound methods to widgets it owns forms a cycle through GTK that Python's
-    collector cannot break, so the popped page would never be freed.
-    """
-    ref = weakref.ref(obj)
-
-    def call(*args):
-        target = ref()
-        return getattr(target, name)(*args) if target is not None else None
-
-    return call
 
 
 class FoldBin(Gtk.Widget):
@@ -93,6 +77,7 @@ class GenrePage(Adw.NavigationPage):
 
     def __init__(self, backend, genre, open_item) -> None:
         super().__init__(title=genre.name)
+        retain_while_rooted(self)
         self.backend, self.item, self.open_item = backend, genre, open_item
         self._albums_done = False
         self._albums_empty = True
@@ -112,30 +97,30 @@ class GenrePage(Adw.NavigationPage):
         body.append(self._fold)
         scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
         scroll.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        scroll.connect("scroll", _weak(self, "_on_wheel"))
+        scroll.connect("scroll", weak_method(self, "_on_wheel"))
         body.add_controller(scroll)
         self._header.append(Adw.Clamp(maximum_size=980, margin_start=20, margin_end=20, child=self._hero(genre)))
 
         self.albums = Carousel(backend, "", open_item, ALBUM_TILE)
         hover = Gtk.EventControllerMotion()
-        hover.connect("enter", _weak(self, "_set_over_albums"), True)
-        hover.connect("leave", _weak(self, "_set_over_albums"), False)
+        hover.connect("enter", weak_method(self, "_set_over_albums"), True)
+        hover.connect("leave", weak_method(self, "_set_over_albums"), False)
         self.albums.add_controller(hover)
         self.albums_toggle = Gtk.Button(halign=Gtk.Align.START, margin_start=20, visible=False)
         self.albums_toggle.add_css_class("flat")
-        self.albums_toggle.connect("clicked", _weak(self, "_toggle_albums"))
+        self.albums_toggle.connect("clicked", weak_method(self, "_toggle_albums"))
         self.revealer = Gtk.Revealer(reveal_child=True, child=self.albums)
         self.albums_toggle.set_label("Albums  ▾")
         self._header.append(Adw.Clamp(maximum_size=980, child=self.albums_toggle))
         self._header.append(Adw.Clamp(maximum_size=980, margin_start=20, margin_end=20, child=self.revealer))
 
-        self.tracks = MediaList(backend, _weak(self, "_fetch_tracks"),
+        self.tracks = MediaList(backend, weak_method(self, "_fetch_tracks"),
                                 lambda t: backend.play_media(t, option=QueueOption.PLAY),
-                                on_empty=_weak(self, "_on_tracks"))
+                                on_empty=weak_method(self, "_on_tracks"))
         self.tracks_stack = Gtk.Stack(vexpand=True)
         self.tracks_stack.set_size_request(-1, 240)
         self.tracks_stack.add_named(self.tracks, "list")
-        self.tracks_stack.add_named(retry_page("Couldn’t load tracks", _weak(self, "_retry_tracks")), "error")
+        self.tracks_stack.add_named(retry_page("Couldn’t load tracks", weak_method(self, "_retry_tracks")), "error")
         body.append(self.tracks_stack)
         self.empty = status_page("view-grid-symbolic", "Nothing in this genre yet")
         self.empty.set_visible(False)
@@ -144,8 +129,8 @@ class GenrePage(Adw.NavigationPage):
         tv.set_content(body)
         self.set_child(tv)
         adj = self.tracks.get_vadjustment()
-        adj.connect("value-changed", _weak(self, "_on_list_scroll"))
-        adj.connect("changed", _weak(self, "_viewport_moved"))
+        adj.connect("value-changed", weak_method(self, "_on_list_scroll"))
+        adj.connect("changed", weak_method(self, "_viewport_moved"))
         backend.run(self._load_albums())
 
     def _stop_fold_anim(self) -> None:
@@ -203,7 +188,7 @@ class GenrePage(Adw.NavigationPage):
             fold, fold.offset, target, spring_params(),
             Adw.CallbackAnimationTarget.new(fold.set_offset))
         anim.set_clamp(True)
-        anim.connect("done", _weak(self, "_fold_settled"))
+        anim.connect("done", weak_method(self, "_fold_settled"))
         anim.play()
 
     def _set_over_albums(self, *args) -> None:
@@ -232,7 +217,7 @@ class GenrePage(Adw.NavigationPage):
         pb.append(Sym("play_arrow", 24, fill=True))
         pb.append(Gtk.Label(label="Play"))
         play.set_child(pb)
-        play.connect("clicked", _weak(self, "_play"))
+        play.connect("clicked", weak_method(self, "_play"))
         info.append(play)
         head.append(info)
         return head
