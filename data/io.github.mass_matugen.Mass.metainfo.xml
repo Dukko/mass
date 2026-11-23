@@ -63,6 +63,16 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.1" date="2026-11-22">
+      <description>
+        <ul>
+          <li>Pages are freed when you leave them, so memory no longer grows as you browse</li>
+          <li>The genre page scrolls as one page: the header folds away as you scroll</li>
+          <li>Row menus in very large Browse folders</li>
+          <li>The Genres tab appears after a temporary server hiccup instead of staying hidden until reconnect</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-11-22">
       <description>
         <ul>
