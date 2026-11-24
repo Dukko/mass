@@ -227,3 +227,19 @@ The images above come from two scripts. Run them against a connected server with
 .venv/bin/python tools/screenshots/shoot.py /tmp/mass-shots 1400 900   # one PNG per view
 python tools/screenshots/frame.py /tmp/mass-shots docs/screenshots      # expressive frames (needs rsvg-convert)
 ```
+
+<details>
+<summary><sub>🦙</sub></summary>
+
+<br>
+
+<kbd>↑</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> <kbd>←</kbd> <kbd>→</kbd> <kbd>B</kbd> <kbd>A</kbd>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/winamp-now-playing.png" alt="Now Playing in the classic skin"></td>
+<td width="50%"><img src="docs/screenshots/winamp-home.png" alt="Home in the classic skin"></td>
+</tr>
+</table>
+
+</details>
