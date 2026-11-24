@@ -63,6 +63,16 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.3" date="2026-11-24">
+      <description>
+        <ul>
+          <li>Now Playing fits the minimum window height without scrolling</li>
+          <li>Scrollbars no longer take up layout space</li>
+          <li>Long artist lists in the queue stay on one line instead of overlapping the title</li>
+          <li>Something old school is hiding in here</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.2.2" date="2026-11-23">
       <description>
         <ul>
