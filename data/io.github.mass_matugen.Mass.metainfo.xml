@@ -63,6 +63,15 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.2" date="2026-11-23">
+      <description>
+        <ul>
+          <li>Fix AI DJ crashing when connected to newer Music Assistant servers</li>
+          <li>Live updates for the AI DJ transcript in Now Playing as tracks change</li>
+          <li>Detect AI Radio provider availability when plugins reload on the server</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.2.1" date="2026-11-22">
       <description>
         <ul>
