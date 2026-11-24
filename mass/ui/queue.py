@@ -204,7 +204,6 @@ class QueuePage(Gtk.Box):
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=2)
         title = label("", "title-m")
         sub = label("", "body-m", "on-variant")
-        sub.set_lines(2)
         text.append(title)
         text.append(sub)
         box.append(text)
@@ -243,11 +242,13 @@ class QueuePage(Gtk.Box):
             title.set_label(f"{seg['name']} · {host_name(self.backend, seg['host_id'])}")
             sub.set_label(seg["text"] or "Preparing…")
             sub.set_wrap(True)
+            sub.set_lines(2)
         else:
             art.set_url(self.backend.image_url(it, 96))
             title.set_label(getattr(mi, "name", None) or it.name)
             sub.set_label(artists_str(mi) if mi else "")
             sub.set_wrap(False)
+            sub.set_lines(1)  # an ellipsizing label with lines=2 would still wrap its text
         dur.set_label(fmt_time(it.duration) if it.duration else "")
         box.is_dj = bool(seg)
         box.to_playlist.set_visible(getattr(mi, "media_type", None) == MediaType.TRACK)
