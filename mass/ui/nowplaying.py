@@ -79,7 +79,7 @@ def _set_class(w: Gtk.Widget, cls: str, on: bool) -> None:
 
 
 CARD_MIN, PANEL_MIN = 380, 400
-ART_MIN, ART_MAX = 80, 520
+ART_MIN, ART_MAX = 64, 520
 
 TABS = (("lyrics", "Lyrics"), ("queue", "Up next"), ("dj", "AI DJ"), ("about", "About"))
 
@@ -140,10 +140,10 @@ class NowPlayingPage(Gtk.Box):
         self._fav_lib: str | None = None
 
         self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                           vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                           vscrollbar_policy=Gtk.PolicyType.EXTERNAL,
                                            vexpand=True)
         self.append(self.scroller)
-        self.layout = Gtk.Box(spacing=16, margin_top=48, margin_bottom=14, margin_start=16, margin_end=16)
+        self.layout = Gtk.Box(spacing=16, margin_top=44, margin_bottom=12, margin_start=16, margin_end=16)
         self.scroller.set_child(self.layout)
 
         # ============================================================ player card
@@ -317,7 +317,7 @@ class NowPlayingPage(Gtk.Box):
         self.layout.set_orientation(Gtk.Orientation.VERTICAL if narrow else Gtk.Orientation.HORIZONTAL)
         self.card.set_size_request(-1 if narrow else CARD_MIN, -1)
         self.panel.set_size_request(-1, 520 if narrow else -1)
-        self.scroller.set_vscrollbar_policy(Gtk.PolicyType.AUTOMATIC if narrow else Gtk.PolicyType.NEVER)
+        self.scroller.set_vscrollbar_policy(Gtk.PolicyType.AUTOMATIC if narrow else Gtk.PolicyType.EXTERNAL)
         self._fit_for = (0, 0)
         self._set_art_size(240 if narrow else 392)
 
@@ -332,9 +332,10 @@ class NowPlayingPage(Gtk.Box):
         if self._narrow or height <= 0 or (width, height) == self._fit_for:
             return
         self._fit_for = (width, height)
-        _min, nat, _b, _b2 = self.card.measure(Gtk.Orientation.VERTICAL, -1)
+        card_w = max(CARD_MIN, self.card.get_width())
+        _min, nat, _b, _b2 = self.card.measure(Gtk.Orientation.VERTICAL, card_w)
         overhead = nat - self.art.size
-        by_height = height - 48 - 14 - overhead
+        by_height = height - 44 - 12 - overhead
         by_width = width - 3 * 16 - PANEL_MIN - 40
         target = int(max(ART_MIN, min(ART_MAX, by_height, by_width)))
         if abs(target - self.art.size) > 4:
@@ -464,6 +465,7 @@ class NowPlayingPage(Gtk.Box):
             self.mute.sym.set_symbol("volume_off" if muted or vol == 0 else
                                      "volume_mute" if vol < 34 else
                                      "volume_down" if vol < 67 else "volume_up")
+        self._fit_for = (0, 0)
         self._tick()
 
     def _tick(self) -> bool:
