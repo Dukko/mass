@@ -123,3 +123,19 @@ def test_dj_for_handles_string_and_dict_status():
     # Unknown or unassigned
     assert b.dj_for("unknown") is None
     assert b.dj_for(None) is None
+
+
+def test_same_origin_requires_scheme_host_and_port_match():
+    same = backend._same_origin
+    assert same("https://ma.lan/imageproxy/x", "https://ma.lan")
+    assert same("https://ma.lan:443/x", "https://ma.lan")
+    assert same("http://ma.lan:8095/x", "http://ma.lan:8095")
+
+    assert not same("http://ma.lan/x", "https://ma.lan")
+    assert not same("https://ma.lan:8443/x", "https://ma.lan")
+    # prefix tricks must not pass
+    assert not same("https://ma.lan@evil.example/x", "https://ma.lan")
+    assert not same("https://ma.lan.evil.example/x", "https://ma.lan")
+    # malformed / missing parts
+    assert not same("https://ma.lan:notaport/x", "https://ma.lan")
+    assert not same("/relative/x", "https://ma.lan")

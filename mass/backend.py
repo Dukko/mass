@@ -50,6 +50,29 @@ def _proxy_size(size: int) -> int:
     return next((s for s in IMAGE_PROXY_SIZES[1:] if s >= size), IMAGE_PROXY_SIZES[-1])
 
 
+def _same_origin(url: str, base: str) -> bool:
+    """Whether `url` targets the same scheme/host/port as `base`.
+
+    String prefixes are unsafe: `https://host@evil` and `https://host.evil` both
+    start with `https://host` but connect somewhere else.
+    """
+    try:
+        a, b = urllib.parse.urlsplit(url), urllib.parse.urlsplit(base)
+        a_port, b_port = a.port, b.port
+    except ValueError:  # malformed URL or port
+        return False
+    if not (a.scheme and b.scheme and a.hostname and b.hostname):
+        return False
+    if a.scheme.lower() not in ("http", "https") or b.scheme.lower() not in ("http", "https"):
+        return False
+    default = {"http": 80, "https": 443}
+    return (
+        a.scheme.lower() == b.scheme.lower()
+        and a.hostname.lower() == b.hostname.lower()
+        and (a_port or default[a.scheme.lower()]) == (b_port or default[b.scheme.lower()])
+    )
+
+
 # Server schemas that introduced optional commands (checked against server_info.schema_version).
 SLEEP_TIMER_SCHEMA = 34  # players/sleep_timer/*
 SOUND_EFFECTS_SCHEMA = 35  # music/sound_effects
@@ -432,9 +455,11 @@ class Backend(GObject.Object):
             return None  # failed recently; don't stall another 15 s on it
         session = await self._get_session()
         headers = {}
-        if self._token and self.config.server_url and url.startswith(
-            (self.config.server_url, self.client.server_info.base_url if self.client else "\0")
-        ):
+        bases = [self.config.server_url]
+        info = getattr(self.client, "server_info", None) if self.client else None
+        if base_url := getattr(info, "base_url", ""):
+            bases.append(base_url)
+        if self._token and any(_same_origin(url, b) for b in bases if b):
             headers["Authorization"] = f"Bearer {self._token}"
         try:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
