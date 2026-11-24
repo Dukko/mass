@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -36,7 +35,7 @@ class Config:
     blur: bool = True
     # local playback endpoint (sendspin daemon)
     endpoint_enabled: bool = True
-    endpoint_name: str = field(default_factory=lambda: f"{socket.gethostname()} (Mass)")
+    endpoint_name: str = "Mass"
     endpoint_audio_device: str = "pipewire"
     endpoint_hardware_volume: bool = False
     # desktop integration

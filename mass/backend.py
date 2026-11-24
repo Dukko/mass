@@ -73,6 +73,17 @@ def _same_origin(url: str, base: str) -> bool:
     )
 
 
+def _is_fetchable_http_url(url: str) -> bool:
+    """Absolute http(s) URL without embedded credentials."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        _ = parts.port  # raises ValueError on a malformed port
+    except ValueError:
+        return False
+    return (parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
+            and not parts.username and not parts.password)
+
+
 # Server schemas that introduced optional commands (checked against server_info.schema_version).
 SLEEP_TIMER_SCHEMA = 34  # players/sleep_timer/*
 SOUND_EFFECTS_SCHEMA = 35  # music/sound_effects
@@ -447,6 +458,8 @@ class Backend(GObject.Object):
 
     async def fetch_image(self, url: str) -> bytes | None:
         if not url:
+            return None
+        if not _is_fetchable_http_url(url):
             return None
         if (data := self._image_cache.get(url)) is not None:
             self._image_cache.move_to_end(url)

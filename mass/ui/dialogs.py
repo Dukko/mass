@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 
 from gi.repository import Adw, GLib, Gtk
 
@@ -18,6 +19,21 @@ from .expressive import Sym
 log = logging.getLogger(__name__)
 
 AUTOSTART = HOST_CONFIG / "autostart" / f"{APP_ID}.desktop"
+
+
+def validated_server_url(text: str) -> str | None:
+    """The trimmed URL if it has an http(s) scheme, else None.
+
+    A bare host is rejected instead of silently defaulting to plain-text http.
+    """
+    url = text.strip()
+    if not url:
+        return None
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+    except ValueError:
+        return None
+    return url if scheme in ("http", "https") else None
 
 
 class LoginDialog(Adw.Dialog):
@@ -75,12 +91,29 @@ class LoginDialog(Adw.Dialog):
             self.url.set_text(servers[0].url)
 
     def _login(self) -> None:
-        url, user, pw = self.url.get_text().strip(), self.user.get_text().strip(), self.pw.get_text()
+        url = validated_server_url(self.url.get_text())
+        user, pw = self.user.get_text().strip(), self.pw.get_text()
         if not (url and user and pw):
-            self._err("Fill in the server URL, username and password.")
+            self._err("Fill in the server URL (with http:// or https://), username and password.")
             return
-        if "://" not in url:
-            url = f"http://{url}"
+        if url.lower().startswith("http://"):
+            self._confirm_plaintext(url, user, pw)
+            return
+        self._do_login(url, user, pw)
+
+    def _confirm_plaintext(self, url: str, user: str, pw: str) -> None:
+        dlg = Adw.AlertDialog(
+            heading="Unencrypted connection",
+            body="This server URL uses http://. Your password and token will be sent in clear text "
+                 "over the network.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("continue", "Continue")
+        dlg.set_response_appearance("continue", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "continue" and self._do_login(url, user, pw))
+        dlg.present(self.get_root())
+
+    def _do_login(self, url: str, user: str, pw: str) -> None:
         self.btn.set_sensitive(False)
         self.error.set_visible(False)
 
