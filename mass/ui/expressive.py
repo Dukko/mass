@@ -313,6 +313,7 @@ class ShapeArt(Gtk.Widget):
     def do_css_changed(self, change) -> None:  # noqa: D102 - icon theme / colors may have changed
         Gtk.Widget.do_css_changed(self, change)
         self._icon_cache = self._glyph_cache = None
+        self.queue_draw()  # the Winamp skin squares the shape via a class on the window
 
     def _mask(self, w: float, h: float) -> Gdk.Texture:
         """The unrotated shape mask; only rebuilt when the size changes or the shape is morphing."""
@@ -331,18 +332,22 @@ class ShapeArt(Gtk.Widget):
         if w <= 0 or h <= 0:
             return
         bg = self.get_color()
-        mask = self._mask(w, h)
-        pad = MASK_PAD * w / max(1, mask.get_width() - 2 * MASK_PAD)
         snapshot.push_mask(Gsk.MaskMode.ALPHA)
-        # mask: the shape, turned around the centre (the art itself stays upright)
-        snapshot.save()
-        if rot := math.degrees(self._rotation):
-            snapshot.translate(Graphene.Point().init(w / 2, h / 2))
-            snapshot.rotate(rot)
-            snapshot.translate(Graphene.Point().init(-w / 2, -h / 2))
-        snapshot.append_scaled_texture(mask, Gsk.ScalingFilter.LINEAR,
-                                       Graphene.Rect().init(-pad, -pad, w + 2 * pad, h + 2 * pad))
-        snapshot.restore()
+        root = self.get_root()
+        if root is not None and root.has_css_class("winamp"):
+            snapshot.append_color(_rgba(1, 1, 1), Graphene.Rect().init(0, 0, w, h))
+        else:
+            mask = self._mask(w, h)
+            pad = MASK_PAD * w / max(1, mask.get_width() - 2 * MASK_PAD)
+            # mask: the shape, turned around the centre (the art itself stays upright)
+            snapshot.save()
+            if rot := math.degrees(self._rotation):
+                snapshot.translate(Graphene.Point().init(w / 2, h / 2))
+                snapshot.rotate(rot)
+                snapshot.translate(Graphene.Point().init(-w / 2, -h / 2))
+            snapshot.append_scaled_texture(mask, Gsk.ScalingFilter.LINEAR,
+                                           Graphene.Rect().init(-pad, -pad, w + 2 * pad, h + 2 * pad))
+            snapshot.restore()
         snapshot.pop()
         # source: placeholder colour, icon, then the art fading in
         snapshot.append_color(bg, Graphene.Rect().init(0, 0, w, h))

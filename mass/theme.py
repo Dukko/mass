@@ -26,6 +26,8 @@ from .config import CACHE_DIR, CONFIG_DIR
 from .host import HOST_CACHE, host_cmd
 from .ui.style import CSS as STYLE_CSS
 from .ui.style import FALLBACKS, SCROLLBAR_CSS
+from .ui.winamp import CSS as WINAMP_CSS
+from .ui.winamp import PALETTE as WINAMP_PALETTE
 
 log = logging.getLogger(__name__)
 
@@ -244,7 +246,12 @@ class ThemeManager(GObject.Object):
 
     def set_translucency(self, transparency: int, blur: bool) -> None:
         self.config.transparency, self.config.blur = transparency, blur
-        self._apply(self.palette, self.source)
+        self._apply(*self._resolved)
+
+    def set_winamp(self, on: bool) -> None:
+        self.config.winamp = on
+        self.config.save()
+        self._apply(*self._resolved)
 
     def _sync_scheme(self, mode: str) -> None:
         # Only nudge libadwaita if the portal didn't already tell it the right thing.
@@ -254,10 +261,16 @@ class ThemeManager(GObject.Object):
 
     def _apply(self, palette: Palette, source: str) -> None:
         global _active_palette
+        self._resolved = (palette, source)  # what the skin hides, restored when it's switched off
+        winamp = self.config.winamp
+        if winamp:
+            palette, source = WINAMP_PALETTE, "winamp"
         self.palette, self.source = palette, source
         _active_palette = palette or {}
         css = (build_css(palette) if palette else "") + "\n" + translucency_css(
             palette, self.config.transparency, self.config.blur) + "\n" + SCROLLBAR_CSS
+        if winamp:
+            css += "\n" + WINAMP_CSS
         if css == getattr(self, "_css", None):
             return  # reloading a provider restyles every widget; skip no-ops
         self._css = css

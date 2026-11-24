@@ -34,6 +34,8 @@ class Config:
     transparency: int = 0
     # ask the compositor to blur what's behind (ext-background-effect-v1)
     blur: bool = True
+    # hidden classic-Winamp skin, toggled with the Konami code
+    winamp: bool = False
     # local playback endpoint (sendspin daemon)
     endpoint_enabled: bool = True
     endpoint_name: str = field(default_factory=lambda: f"{socket.gethostname()} (Mass)")

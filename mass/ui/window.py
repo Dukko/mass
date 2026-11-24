@@ -19,6 +19,7 @@ from .splash import Splash
 from .players import PlayersView
 from .queue import QueuePage
 from .search import SearchView
+from .winamp import KONAMI_LEN, konami_step
 
 SPLASH_TIMEOUT_S = 12  # never keep the splash up longer than this (slow or unreachable server)
 WARM_GAP_FRAMES = 3  # smooth frames to leave between two warm-up layouts, so the splash keeps moving
@@ -199,7 +200,25 @@ class MainWindow(Adw.ApplicationWindow):
         self._on_status(self.backend, self.backend.status, self.backend.status_detail)
         self.show_page("home")
 
+        if self.app.config.winamp:
+            self.add_css_class("winamp")
+        self._konami_at = 0
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_konami_key)
+        self.add_controller(keys)
+
     # ------------------------------------------------------------------ navigation
+
+    def _on_konami_key(self, _ctl, keyval: int, _code: int, _state) -> bool:
+        self._konami_at = konami_step(self._konami_at, keyval)
+        if self._konami_at == KONAMI_LEN:
+            self._konami_at = 0
+            on = not self.app.config.winamp
+            self.app.theme.set_winamp(on)
+            (self.add_css_class if on else self.remove_css_class)("winamp")
+            self.toast("🦙 Winamp skin enabled. It really whips the llama's ass!" if on
+                       else "Back to Material")
+        return False
 
     def refresh(self) -> None:
         playing = is_playing(self.backend)
