@@ -149,12 +149,6 @@ jobs:
     # only once signing is set up (tools/setup-flatpak-repo.sh)
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.FLATPAK_REPO != 'off'
     runs-on: ubuntu-24.04
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Install flatpak
         run: |
@@ -195,6 +189,19 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Wait for Pages artifact to register
+        run: sleep 5
 
       - id: deploy
         uses: actions/deploy-pages@v5
