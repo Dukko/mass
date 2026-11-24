@@ -67,3 +67,12 @@ def test_style_css_loads_cleanly():
     provider = Gtk.CssProvider()
     provider.load_from_string(STYLE_CSS)
 
+
+def test_nowplaying_sizing_constants():
+    from mass.ui.nowplaying import ART_MIN, CARD_MIN, PANEL_MIN
+
+    assert ART_MIN <= 100
+    assert CARD_MIN <= 400
+    assert PANEL_MIN <= 450
+
+

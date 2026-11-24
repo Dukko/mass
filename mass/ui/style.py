@@ -155,20 +155,20 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 
 /* the hero play button: squircle when paused, pill (and wider) when playing */
 .mass button.play-hero {{
-  min-width: 96px; min-height: 80px; padding: 0; border-radius: {R_XL}px;
+  min-width: 80px; min-height: 60px; padding: 0; border-radius: {R_L_PLUS}px;
   background: {v('primary')}; color: {v('on-primary')};
   box-shadow: 0 4px 14px {mix('primary', 35)};
   transition: border-radius {SPATIAL}, min-width {SPATIAL}, background {EFFECTS};
 }}
-.mass button.play-hero image {{ -gtk-icon-size: 32px; }}
+.mass button.play-hero image {{ -gtk-icon-size: 28px; }}
 .mass button.play-hero:hover {{ background: {mix('primary', 90, v('on-primary'))}; }}
-.mass button.play-hero.playing {{ min-width: 128px; border-radius: {R_FULL}px; }}
-.mass button.play-hero:active {{ border-radius: {R_L}px; }}
+.mass button.play-hero.playing {{ min-width: 104px; border-radius: {R_FULL}px; }}
+.mass button.play-hero:active {{ border-radius: {R_M}px; }}
 
 /* connected button group: outer corners full, inner corners small */
 .mass .btn-group {{ border-spacing: 4px; }}
 .mass .btn-group > button {{
-  border-radius: {R_M}px; min-height: 56px; min-width: 56px; padding: 0;
+  border-radius: {R_M}px; min-height: 48px; min-width: 48px; padding: 0;
   background: {v('secondary-container')}; color: {v('on-secondary-container')};
   transition: border-radius {FAST_SPATIAL}, background {EFFECTS};
 }}
@@ -178,12 +178,12 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 .mass .btn-group > button:active {{ border-radius: {R_S}px; }}
 .mass .btn-group > button.on {{ background: {v('primary')}; color: {v('on-primary')}; }}
 .mass .btn-group > button.play-hero {{
-  background: {v('primary')}; color: {v('on-primary')}; border-radius: {R_XL}px; min-width: 96px; min-height: 80px;
+  background: {v('primary')}; color: {v('on-primary')}; border-radius: {R_L_PLUS}px; min-width: 80px; min-height: 60px;
 }}
 .mass .btn-group > button.play-hero:hover {{ background: {mix('primary', 90, v('on-primary'))}; }}
-.mass .btn-group > button.play-hero.playing {{ border-radius: {R_FULL}px; min-width: 128px; }}
-.mass .btn-group > button.play-hero:active {{ border-radius: {R_L}px; }}
-.mass .btn-group > button image {{ -gtk-icon-size: 22px; }}
+.mass .btn-group > button.play-hero.playing {{ border-radius: {R_FULL}px; min-width: 104px; }}
+.mass .btn-group > button.play-hero:active {{ border-radius: {R_M}px; }}
+.mass .btn-group > button image {{ -gtk-icon-size: 20px; }}
 
 /* segmented chips (library tabs) */
 .mass .seg {{ border-spacing: 2px; }}
@@ -221,7 +221,7 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 }}
 .mass .player-chip:active {{ border-radius: {R_M}px; }}
 .mass .dj-chip > button, .mass button.dj-chip {{
-  min-height: 36px; padding: 0 14px 0 10px; border-radius: {R_FULL}px; font-weight: 700;
+  min-height: 32px; padding: 0 12px 0 8px; border-radius: {R_FULL}px; font-weight: 700;
   background: none; box-shadow: inset 0 0 0 1px {v('outline-variant')};
   transition: border-radius {FAST_SPATIAL}, background {EFFECTS};
 }}
@@ -341,10 +341,10 @@ window.mass label {{ font-feature-settings: "tnum" 0; }}
 
 /* ------------------------------------------------------------ now playing */
 .mass .np-page {{ background: none; }}
-.mass .np-title {{ font-size: 30px; font-weight: 800; letter-spacing: -0.5px;
+.mass .np-title {{ font-size: 24px; font-weight: 800; letter-spacing: -0.5px;
   font-variation-settings: "ROND" 100; }}
-.mass .np-artist {{ font-size: 18px; font-weight: 650; color: {v('primary')}; }}
-.mass .np-album {{ font-size: 15px; color: {v('on-surface-variant')}; }}
+.mass .np-artist {{ font-size: 16px; font-weight: 650; color: {v('primary')}; }}
+.mass .np-album {{ font-size: 14px; color: {v('on-surface-variant')}; }}
 .mass .np-artist link, .mass .np-album link {{ color: inherit; text-decoration: none; }}
 .mass .np-artist link:hover, .mass .np-album link:hover {{ text-decoration: underline; }}
 
@@ -393,7 +393,7 @@ CSS += f"""
 CSS += f"""
 /* ---------- now playing option chips (MASS parity) */
 .mass button.np-tool {{
-  min-height: 32px; padding: 0 12px 0 10px; border-radius: {R_FULL}px; font-size: 13px; font-weight: 700;
+  min-height: 30px; padding: 0 10px 0 8px; border-radius: {R_FULL}px; font-size: 12px; font-weight: 700;
   background: none; color: {v('on-surface-variant')}; box-shadow: inset 0 0 0 1px {v('outline-variant')};
   transition: border-radius {FAST_SPATIAL}, background {EFFECTS}, color {EFFECTS};
 }}
@@ -430,28 +430,28 @@ CSS += f"""
 CSS += f"""
 /* ---------- now playing, option C: player card + tabbed panel */
 .mass .np-card {{
-  padding: 20px 24px 22px; border-radius: {R_XL_PLUS}px;
+  padding: 14px 18px 14px; border-radius: {R_XL}px;
   background: {mix('primary-container', 45, v('surface-container'))};
 }}
 .mass .np-card .player-chip {{ background: {mix('primary-container', 80, v('surface-container-high'))};
   color: {v('on-primary-container')}; }}
 .mass .np-card .np-badge {{ min-height: 28px; }}
-.mass .np-panel {{ border-radius: {R_XL_PLUS}px; background: {v('surface-container-low')}; }}
+.mass .np-panel {{ border-radius: {R_XL}px; background: {v('surface-container-low')}; }}
 .mass button.np-tab {{
-  min-height: 40px; padding: 0 18px; border-radius: {R_FULL}px; font-size: 15px; font-weight: 650;
+  min-height: 36px; padding: 0 16px; border-radius: {R_FULL}px; font-size: 14px; font-weight: 650;
   background: none; box-shadow: none; color: {v('on-surface-variant')};
   transition: background {EFFECTS}, color {EFFECTS}, border-radius {FAST_SPATIAL};
 }}
 .mass button.np-tab:hover {{ background: {mix('on-surface', 8)}; }}
 .mass button.np-tab:active {{ border-radius: {R_M}px; }}
 .mass button.np-tab:checked {{ background: {v('secondary-container')}; color: {v('on-secondary-container')}; }}
-.mass button.np-fav {{ min-width: 52px; min-height: 52px; }}
+.mass button.np-fav {{ min-width: 44px; min-height: 44px; }}
 .mass button.np-fav.on {{ border-radius: {R_FULL}px; }}
 .mass scale.m3-slider.thin trough {{ min-height: 10px; border-radius: 5px; }}
 .mass scale.m3-slider.thin highlight {{ min-height: 10px; border-radius: 5px 2px 2px 5px; }}
 .mass scale.m3-slider.thin slider {{ min-height: 28px; margin: -9px -2px; }}
 .mass menubutton.np-tool > button {{
-  min-height: 32px; padding: 0 12px 0 10px; border-radius: {R_FULL}px; font-size: 13px; font-weight: 700;
+  min-height: 30px; padding: 0 10px 0 8px; border-radius: {R_FULL}px; font-size: 12px; font-weight: 700;
   background: none; color: {v('on-surface-variant')}; box-shadow: inset 0 0 0 1px {v('outline-variant')};
   transition: border-radius {FAST_SPATIAL}, background {EFFECTS}, color {EFFECTS};
 }}

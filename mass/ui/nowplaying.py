@@ -8,11 +8,19 @@ from gi.repository import GLib, Gtk
 from music_assistant_models.enums import PlaybackState, RepeatMode
 
 from .common import ArtImage, artists_str, fmt_time, label
-from .dj import DJ_SHAPE, DJCaption, DJChip, DJTranscript, dj_icon, dj_segment, host_name
+from .dj import (
+    DJ_SHAPE,
+    DJCaption,
+    DJChip,
+    DJTranscript,
+    dj_icon,
+    dj_segment,
+    host_name,
+)
 from .expressive import Sym, WavySeekbar, sym_button
 from .lyrics import LyricsView
-from .np_options import NowPlayingOptions, audio_quality
 from .motion import spring_stack
+from .np_options import NowPlayingOptions, audio_quality
 from .queue import QueuePage
 
 log = logging.getLogger(__name__)
@@ -70,8 +78,8 @@ def _set_class(w: Gtk.Widget, cls: str, on: bool) -> None:
     (w.add_css_class if on else w.remove_css_class)(cls)
 
 
-CARD_MIN, PANEL_MIN = 440, 660
-ART_MIN, ART_MAX = 220, 520
+CARD_MIN, PANEL_MIN = 380, 400
+ART_MIN, ART_MAX = 80, 520
 
 TABS = (("lyrics", "Lyrics"), ("queue", "Up next"), ("dj", "AI DJ"), ("about", "About"))
 
@@ -131,18 +139,20 @@ class NowPlayingPage(Gtk.Box):
         self._fav_on = False
         self._fav_lib: str | None = None
 
-        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
-        self.append(scroller)
-        self.layout = Gtk.Box(spacing=16, margin_top=52, margin_bottom=16, margin_start=16, margin_end=16)
-        scroller.set_child(self.layout)
+        self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                           vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                           vexpand=True)
+        self.append(self.scroller)
+        self.layout = Gtk.Box(spacing=16, margin_top=48, margin_bottom=14, margin_start=16, margin_end=16)
+        self.scroller.set_child(self.layout)
 
         # ============================================================ player card
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, width_request=440)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, width_request=CARD_MIN)
         card.add_css_class("np-card")
         self.card = card
         self.layout.append(card)
 
-        self.seek = WavySeekbar(height=36, amplitude=4.0, wavelength=34, line_width=5)
+        self.seek = WavySeekbar(height=30, amplitude=3.5, wavelength=32, line_width=4)
         self.seek.connect("seek", self._on_seek)
         self.options = NowPlayingOptions(backend, self, self.seek.set_wavy)
 
@@ -168,7 +178,7 @@ class NowPlayingPage(Gtk.Box):
         self.art.set_margin_top(4)
         card.append(self.art)
 
-        trow = Gtk.Box(spacing=12, margin_top=4)
+        trow = Gtk.Box(spacing=10, margin_top=2)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
         self.title = label("", "np-title", ellipsize=False, wrap=True, lines=2)
         self.title.set_wrap_mode(2)  # word-char
@@ -207,9 +217,9 @@ class NowPlayingPage(Gtk.Box):
                                       not (backend.active_queue and backend.active_queue.shuffle_enabled)))
         group = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
         group.add_css_class("btn-group")
-        self.prev = sym_button("skip_previous", "Previous", (), 28, True, backend.previous)
-        self.play = sym_button("play_arrow", "Play / pause", ("play-hero",), 40, True, backend.play_pause)
-        self.next = sym_button("skip_next", "Next", (), 28, True, backend.next)
+        self.prev = sym_button("skip_previous", "Previous", (), 24, True, backend.previous)
+        self.play = sym_button("play_arrow", "Play / pause", ("play-hero",), 34, True, backend.play_pause)
+        self.next = sym_button("skip_next", "Next", (), 24, True, backend.next)
         for w in (self.prev, self.play, self.next):
             group.append(w)
         self.repeat = sym_button("repeat", "Repeat", ("m3", "icon", "toggle"), cb=backend.cycle_repeat)
@@ -243,7 +253,7 @@ class NowPlayingPage(Gtk.Box):
         self.panel = panel
         self.layout.append(panel)
 
-        phead = Gtk.Box(spacing=4, margin_start=16, margin_end=12, margin_top=12)
+        phead = Gtk.Box(spacing=4, margin_start=16, margin_end=12, margin_top=10, margin_bottom=4)
         self.tabs: dict[str, Gtk.ToggleButton] = {}
         first = None
         for name, text in TABS:
@@ -280,7 +290,7 @@ class NowPlayingPage(Gtk.Box):
         panel.append(self.tab_motion)
         self._lyrics_key: str | None = None
 
-        foot = Gtk.Box(spacing=8, margin_start=20, margin_end=16, margin_bottom=16, margin_top=8)
+        foot = Gtk.Box(spacing=8, margin_start=16, margin_end=12, margin_bottom=12, margin_top=6)
         for w in (self.options.autoplay, self.options.crossfade, self.options.sleep):
             foot.append(w)
         foot.append(Gtk.Box(hexpand=True))
@@ -307,8 +317,9 @@ class NowPlayingPage(Gtk.Box):
         self.layout.set_orientation(Gtk.Orientation.VERTICAL if narrow else Gtk.Orientation.HORIZONTAL)
         self.card.set_size_request(-1 if narrow else CARD_MIN, -1)
         self.panel.set_size_request(-1, 520 if narrow else -1)
+        self.scroller.set_vscrollbar_policy(Gtk.PolicyType.AUTOMATIC if narrow else Gtk.PolicyType.NEVER)
         self._fit_for = (0, 0)
-        self._set_art_size(280 if narrow else 392)
+        self._set_art_size(240 if narrow else 392)
 
     def _set_art_size(self, size: int) -> None:
         if size != self.art.size:
@@ -323,15 +334,15 @@ class NowPlayingPage(Gtk.Box):
         self._fit_for = (width, height)
         _min, nat, _b, _b2 = self.card.measure(Gtk.Orientation.VERTICAL, -1)
         overhead = nat - self.art.size
-        by_height = height - 52 - 16 - overhead
-        by_width = width - 3 * 16 - PANEL_MIN - 48
+        by_height = height - 48 - 14 - overhead
+        by_width = width - 3 * 16 - PANEL_MIN - 40
         target = int(max(ART_MIN, min(ART_MAX, by_height, by_width)))
         if abs(target - self.art.size) > 4:
             self._fit_art(target)
 
     def _fit_art(self, size: int) -> None:
         self._set_art_size(size)
-        self.card.set_size_request(max(CARD_MIN, size + 48), -1)
+        self.card.set_size_request(max(CARD_MIN, size + 40), -1)
 
     # ------------------------------------------------------------------ tabs
 
