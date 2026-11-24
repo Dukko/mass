@@ -101,7 +101,7 @@ class Backend(GObject.Object):
         self.dj_hosts: dict[str, dict] = {}
         self._lyrics: dict[str, tuple[str | None, str | None]] = {}
         self._sound_effects: list[dict] | None = None
-        self.dj_map: dict[str, str] = {}
+        self.dj_map: dict[str, Any] = {}
         self._sort_cache: dict[ListingType, list[SortOptionInfo]] = {}
         self._genres_ok: bool | None = None
 
@@ -240,6 +240,8 @@ class Backend(GObject.Object):
             self.emit("queue-time-updated", oid)
         elif et in (EventType.MEDIA_ITEM_ADDED, EventType.MEDIA_ITEM_UPDATED, EventType.MEDIA_ITEM_DELETED):
             self.emit("media-item-changed", et.value, oid)
+        elif et == EventType.PROVIDERS_UPDATED:
+            self.run(self.refresh_ai())
 
     # ------------------------------------------------------------------ state helpers
 
@@ -818,7 +820,7 @@ class Backend(GObject.Object):
         else:
             try:
                 hosts = await self.ai("hosts/list")
-                self.dj_hosts = {h["id"]: h for h in hosts}
+                self.dj_hosts = {h["id"]: h for h in (hosts or [])}
                 self.dj_map = await self.ai("queue_dj/status") or {}
             except Exception as err:  # noqa: BLE001
                 log.warning("AI Radio unavailable: %s", err)
@@ -826,7 +828,8 @@ class Backend(GObject.Object):
         self.emit("ai-changed")
 
     def dj_for(self, queue_id: str | None) -> dict | None:
-        host_id = self.dj_map.get(queue_id or "")
+        val = self.dj_map.get(queue_id or "")
+        host_id = val.get("host_id") if isinstance(val, dict) else val
         return self.dj_hosts.get(host_id) if host_id else None
 
     def set_dj(self, host_id: str | None) -> None:

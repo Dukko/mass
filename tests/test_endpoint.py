@@ -10,6 +10,7 @@ import mass.endpoint as endpoint
 def test_write_env_round_trips_quoting(tmp_path, monkeypatch):
     env = tmp_path / "sendspin.env"
     monkeypatch.setattr(endpoint, "ENV_FILE", env)
+    monkeypatch.setattr(endpoint, "CONFIG_DIR", tmp_path)
     ep = endpoint.Endpoint(SimpleNamespace(
         endpoint_name='Kitchen "Main" $HOME `x`',
         endpoint_audio_device="pw: sink with spaces",

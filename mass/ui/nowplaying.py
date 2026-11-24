@@ -430,6 +430,8 @@ class NowPlayingPage(Gtk.Box):
             self._update_lyrics(title, artist, bool(seg))
         elif self.stack.get_visible_child_name() == "about":
             self.about.refresh(b)
+        elif self.stack.get_visible_child_name() == "dj":
+            self.transcript.load()
         self.seek.set_sensitive(bool(duration) and q is not None)
         self.duration.set_label(fmt_time(duration) if duration else "")
 

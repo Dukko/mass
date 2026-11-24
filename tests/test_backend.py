@@ -106,3 +106,20 @@ def test_elapsed_external_source(monkeypatch):
                         current_media=SimpleNamespace(duration=10.0))
     monkeypatch.setattr(Backend, "active_player", property(lambda _self: p))
     assert b.elapsed() == 10.0
+
+
+def test_dj_for_handles_string_and_dict_status():
+    b = Backend.__new__(Backend)
+    b.dj_hosts = {"host1": {"id": "host1", "name": "DJ Alice"}}
+
+    # Legacy schema: queue_id -> host_id string
+    b.dj_map = {"q1": "host1"}
+    assert b.dj_for("q1") == {"id": "host1", "name": "DJ Alice"}
+
+    # New schema: queue_id -> dict with host_id and station_id
+    b.dj_map = {"q1": {"host_id": "host1", "station_id": ""}}
+    assert b.dj_for("q1") == {"id": "host1", "name": "DJ Alice"}
+
+    # Unknown or unassigned
+    assert b.dj_for("unknown") is None
+    assert b.dj_for(None) is None

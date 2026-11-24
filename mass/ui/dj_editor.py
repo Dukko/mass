@@ -13,6 +13,7 @@ import uuid
 
 from gi.repository import Adw, GLib, Gtk
 
+from .common import app_window
 from .expressive import Sym
 
 log = logging.getLogger(__name__)
@@ -130,7 +131,8 @@ class DJEditor:
     # ------------------------------------------------------------------ data
 
     def _toast_parent(self, text: str) -> None:
-        if (win := self.parent.get_root()) and hasattr(win, "toast"):
+        win = self.parent.get_root() or app_window()
+        if win and hasattr(win, "toast"):
             win.toast(text)
 
     async def _load(self) -> None:
@@ -244,7 +246,9 @@ class DJEditor:
             mng.add(rm)
             page.add(mng)
 
-        self.dlg.present(self.parent.get_root())
+        win = self.parent.get_root() or app_window()
+        if win:
+            self.dlg.present(win)
 
     def _sec_name(self, sid: str) -> str:
         sec = self.sections.get(sid) or {}
