@@ -527,3 +527,113 @@ CSS += f"""
 .mass .splash-title {{ font-size: {T_HEADLINE_L}px; font-weight: 800; letter-spacing: -0.5px; color: {v('on-surface')}; }}
 .mass .splash-status {{ font-size: {T_BODY_M}px; color: {v('on-primary-container')}; }}
 """
+
+SCROLLBAR_CSS = """
+/* ------------------------------------------------------------ scrollbars: never display */
+scrollbar,
+scrollbar *,
+scrollbar:hover,
+scrollbar:hover *,
+scrollbar:active,
+scrollbar:active *,
+scrollbar.top,
+scrollbar.bottom,
+scrollbar.left,
+scrollbar.right,
+scrollbar.horizontal,
+scrollbar.vertical,
+scrollbar.overlay-indicator,
+scrollbar.hovering,
+scrollbar.dragging,
+scrollbar.fine-tune,
+scrollbar > range,
+scrollbar > range > trough,
+scrollbar > range > trough > slider,
+.mass scrollbar,
+.mass scrollbar *,
+.mass scrollbar:hover,
+.mass scrollbar:hover *,
+.mass scrollbar:active,
+.mass scrollbar:active *,
+.mass scrollbar.top,
+.mass scrollbar.bottom,
+.mass scrollbar.left,
+.mass scrollbar.right,
+.mass scrollbar.horizontal,
+.mass scrollbar.vertical,
+.mass scrollbar.overlay-indicator,
+.mass scrollbar.hovering,
+.mass scrollbar.dragging,
+.mass scrollbar.fine-tune,
+.mass scrollbar > range,
+.mass scrollbar > range > trough,
+.mass scrollbar > range > trough > slider,
+window.mass scrollbar,
+window.mass scrollbar *,
+window.mass scrollbar:hover,
+window.mass scrollbar:hover *,
+window.mass scrollbar:active,
+window.mass scrollbar:active *,
+window.mass scrollbar.top,
+window.mass scrollbar.bottom,
+window.mass scrollbar.left,
+window.mass scrollbar.right,
+window.mass scrollbar.horizontal,
+window.mass scrollbar.vertical,
+window.mass scrollbar.overlay-indicator,
+window.mass scrollbar.hovering,
+window.mass scrollbar.dragging,
+window.mass scrollbar.fine-tune,
+window.mass scrollbar > range,
+window.mass scrollbar > range > trough,
+window.mass scrollbar > range > trough > slider {
+  min-width: 0;
+  min-height: 0;
+  -gtk-icon-size: 0;
+  opacity: 0;
+  background: none;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  box-shadow: none;
+  outline: none;
+  transition: none;
+}
+
+scrollbar slider,
+scrollbar trough,
+scrollbar range,
+scrollbar.vertical slider,
+scrollbar.horizontal slider,
+scrollbar.vertical trough,
+scrollbar.horizontal trough,
+.mass scrollbar slider,
+.mass scrollbar trough,
+.mass scrollbar range,
+.mass scrollbar.vertical slider,
+.mass scrollbar.horizontal slider,
+.mass scrollbar.vertical trough,
+.mass scrollbar.horizontal trough,
+window.mass scrollbar slider,
+window.mass scrollbar trough,
+window.mass scrollbar range,
+window.mass scrollbar.vertical slider,
+window.mass scrollbar.horizontal slider,
+window.mass scrollbar.vertical trough,
+window.mass scrollbar.horizontal trough {
+  min-width: 0;
+  min-height: 0;
+  opacity: 0;
+  background: none;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  box-shadow: none;
+  outline: none;
+}
+"""
+
+CSS += SCROLLBAR_CSS
+

@@ -25,7 +25,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 from .config import CACHE_DIR, CONFIG_DIR
 from .host import HOST_CACHE, host_cmd
 from .ui.style import CSS as STYLE_CSS
-from .ui.style import FALLBACKS
+from .ui.style import FALLBACKS, SCROLLBAR_CSS
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class ThemeManager(GObject.Object):
         display = Gdk.Display.get_default()
         static = Gtk.CssProvider()
         static.load_from_string(STYLE_CSS)
-        Gtk.StyleContext.add_provider_for_display(display, static, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.StyleContext.add_provider_for_display(display, static, Gtk.STYLE_PROVIDER_PRIORITY_USER + 10)
         # above USER (gtk.css from DMS), so live changes win over the stale startup copy
         Gtk.StyleContext.add_provider_for_display(
             display, self._provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 10
@@ -257,7 +257,7 @@ class ThemeManager(GObject.Object):
         self.palette, self.source = palette, source
         _active_palette = palette or {}
         css = (build_css(palette) if palette else "") + "\n" + translucency_css(
-            palette, self.config.transparency, self.config.blur)
+            palette, self.config.transparency, self.config.blur) + "\n" + SCROLLBAR_CSS
         if css == getattr(self, "_css", None):
             return  # reloading a provider restyles every widget; skip no-ops
         self._css = css

@@ -3,6 +3,8 @@
 import json
 
 from mass.theme import _parse_palette_file
+from mass.ui.style import CSS as STYLE_CSS
+from mass.ui.style import SCROLLBAR_CSS
 
 
 def _write(tmp_path, data):
@@ -45,3 +47,23 @@ def test_invalid_or_empty_files(tmp_path):
     bad.write_text("{not json")
     assert _parse_palette_file(bad) is None
     assert _parse_palette_file(_write(tmp_path, {"mode": "dark"})) is None
+
+
+def test_scrollbar_suppression_css():
+    from gi.repository import Gtk
+
+    provider = Gtk.CssProvider()
+    provider.load_from_string(SCROLLBAR_CSS)
+    assert "scrollbar" in SCROLLBAR_CSS
+    assert "min-width: 0;" in SCROLLBAR_CSS
+    assert "min-height: 0;" in SCROLLBAR_CSS
+    assert "opacity: 0;" in SCROLLBAR_CSS
+    assert SCROLLBAR_CSS in STYLE_CSS
+
+
+def test_style_css_loads_cleanly():
+    from gi.repository import Gtk
+
+    provider = Gtk.CssProvider()
+    provider.load_from_string(STYLE_CSS)
+
