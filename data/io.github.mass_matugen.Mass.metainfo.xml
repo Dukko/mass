@@ -63,6 +63,14 @@
   <url type="vcs-browser">https://github.com/Dukko/mass</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.4" date="2026-11-25">
+      <description>
+        <ul>
+          <li>Live Omarchy theming support via colors.toml (thanks to Suspicious_Selfy for the idea)</li>
+          <li>Fix Now Playing vertical cutoff on compact windows</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.2.3" date="2026-11-24">
       <description>
         <ul>
