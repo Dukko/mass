@@ -13,6 +13,7 @@ finish-args:
   - --filesystem=xdg-run/pipewire-0
   # shared with a native install: settings, matugen template output, sendspin env
   - --filesystem=xdg-config/mass:create
+  - --filesystem=xdg-config/omarchy:ro     # Omarchy active theme
   - --filesystem=xdg-cache/dms:ro          # DankMaterialShell palette
   - --filesystem=xdg-config/autostart:create
   - --filesystem=xdg-config/systemd/user:create

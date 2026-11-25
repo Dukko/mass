@@ -259,9 +259,11 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(srv)
 
         look = Adw.PreferencesGroup(title="Appearance",
-                                    description="Colors come from matugen. “System” follows your wallpaper "
-                                                "and live-reloads, through DankMaterialShell or the bundled template.")
-        modes = [("system", "System (matugen)"), ("artwork", "Album art (matugen)"), ("adwaita", "Plain Adwaita")]
+                                    description="Colors come from matugen or Omarchy. “System” follows your "
+                                                "wallpaper or active theme and live-reloads via Omarchy, "
+                                                "DankMaterialShell, or the bundled matugen template.")
+        modes = [("system", "System (matugen / Omarchy)"), ("artwork", "Album art (matugen)"),
+                 ("adwaita", "Plain Adwaita")]
         self.mode_row = Adw.ComboRow(title="Color source", model=Gtk.StringList.new([m[1] for m in modes]))
         self.mode_row.set_selected(next((i for i, m in enumerate(modes) if m[0] == cfg.theme_mode), 0))
         self.mode_row.connect("notify::selected",

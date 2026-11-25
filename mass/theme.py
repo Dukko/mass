@@ -1,11 +1,10 @@
-"""Matugen theming.
+"""System & artwork theming (matugen, DankMaterialShell, Omarchy).
 
 Palette sources, in order of preference for "system" mode:
-  1. $XDG_CONFIG_HOME/mass/colors.json  - written by the bundled matugen template
-                                          (data/matugen/mass-colors.json), so any
-                                          matugen setup can drive the app
-  2. $XDG_CACHE_HOME/dms/dms-colors.json - DankMaterialShell's matugen output
-Both are watched; the app re-themes live whenever the wallpaper changes.
+  1. $XDG_CONFIG_HOME/mass/colors.json         - bundled matugen template
+  2. $XDG_CONFIG_HOME/omarchy/current/theme/colors.toml - active Omarchy theme
+  3. $XDG_CACHE_HOME/dms/dms-colors.json       - DankMaterialShell's matugen output
+All are watched; the app re-themes live whenever the theme or wallpaper changes.
 
 "artwork" mode runs `matugen image <cover> --dry-run -j hex` on the now-playing cover.
 
@@ -18,12 +17,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import tomllib
 from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from .config import CACHE_DIR, CONFIG_DIR
-from .host import HOST_CACHE, host_cmd
+from .host import HOST_CACHE, HOST_CONFIG, host_cmd
 from .ui.style import CSS as STYLE_CSS
 from .ui.style import FALLBACKS, SCROLLBAR_CSS
 from .ui.winamp import CSS as WINAMP_CSS
@@ -32,6 +33,8 @@ from .ui.winamp import PALETTE as WINAMP_PALETTE
 log = logging.getLogger(__name__)
 
 APP_COLORS = CONFIG_DIR / "colors.json"
+OMARCHY_CURRENT = HOST_CONFIG / "omarchy" / "current"
+OMARCHY_COLORS = OMARCHY_CURRENT / "theme" / "colors.toml"
 DMS_COLORS = HOST_CACHE / "dms" / "dms-colors.json"
 ART_DIR = CACHE_DIR / "art"
 ART_CACHE_MAX = 200  # palette files kept; older ones are cheap to regenerate
@@ -78,6 +81,99 @@ def _parse_palette_file(path: Path) -> tuple[str | None, dict[str, Palette]] | N
         return None
     mode = data.get("mode") if data.get("mode") in ("dark", "light") else None
     return mode, out
+
+
+_HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
+
+
+def _norm_hex(val: object) -> str | None:
+    if isinstance(val, str) and _HEX_RE.match(val.strip()):
+        s = val.strip()
+        return s if s.startswith("#") else f"#{s}"
+    return None
+
+
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    return int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
+
+
+def _mix_hex(c1: str, c2: str, t: float) -> str:
+    r1, g1, b1 = _hex_to_rgb(c1)
+    r2, g2, b2 = _hex_to_rgb(c2)
+    r = round(r1 + (r2 - r1) * t)
+    g = round(g1 + (g2 - g1) * t)
+    b = round(b1 + (b2 - b1) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _luminance(h: str) -> float:
+    def ch(c: int) -> float:
+        v = c / 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    r, g, b = _hex_to_rgb(h)
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def _contrast_fg(bg: str) -> str:
+    return "#111111" if _luminance(bg) > 0.36 else "#ffffff"
+
+
+def _parse_omarchy_file(path: Path) -> tuple[str, dict[str, Palette]] | None:
+    """Parse an Omarchy `colors.toml` into (mode, {mode: Material 3 Palette})."""
+    try:
+        data = tomllib.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    bg = _norm_hex(data.get("background"))
+    fg = _norm_hex(data.get("foreground"))
+    accent = _norm_hex(data.get("accent")) or _norm_hex(data.get("color4")) or _norm_hex(data.get("color6"))
+    if not (bg and fg and accent):
+        return None
+
+    is_light = data.get("mode") == "light" or (path.parent / "light.mode").exists() or _luminance(bg) > 0.45
+    mode = "light" if is_light else "dark"
+    secondary = _norm_hex(data.get("color6")) or _norm_hex(data.get("color5")) or _mix_hex(accent, fg, 0.35)
+    tertiary = _norm_hex(data.get("color5")) or _norm_hex(data.get("color3")) or secondary
+    error = _norm_hex(data.get("color1")) or "#f25e86"
+    surface_lowest = "#ffffff" if is_light else _mix_hex(bg, "#000000", 0.22)
+    palette: Palette = {
+        "primary": accent,
+        "on_primary": _contrast_fg(accent),
+        "primary_container": _mix_hex(accent, bg, 0.70),
+        "on_primary_container": fg,
+        "inverse_primary": _mix_hex(accent, bg, 0.45),
+        "secondary": secondary,
+        "on_secondary": _contrast_fg(secondary),
+        "secondary_container": _mix_hex(secondary, bg, 0.80),
+        "on_secondary_container": fg,
+        "tertiary": tertiary,
+        "on_tertiary": _contrast_fg(tertiary),
+        "tertiary_container": _mix_hex(tertiary, bg, 0.75),
+        "on_tertiary_container": fg,
+        "error": error,
+        "on_error": _contrast_fg(error),
+        "error_container": _mix_hex(error, bg, 0.72),
+        "on_error_container": fg,
+        "background": bg,
+        "on_background": fg,
+        "surface": bg,
+        "on_surface": fg,
+        "surface_variant": _mix_hex(bg, fg, 0.12),
+        "on_surface_variant": _mix_hex(fg, bg, 0.28),
+        "surface_dim": _mix_hex(bg, fg if is_light else "#000000", 0.12),
+        "surface_bright": _mix_hex(bg, fg, 0.14),
+        "surface_tint": accent,
+        "surface_container_lowest": surface_lowest,
+        "surface_container_low": _mix_hex(bg, fg, 0.04),
+        "surface_container": _mix_hex(bg, fg, 0.08),
+        "surface_container_high": _mix_hex(bg, fg, 0.12),
+        "surface_container_highest": _mix_hex(bg, fg, 0.17),
+        "outline": _mix_hex(fg, bg, 0.55),
+        "outline_variant": _mix_hex(fg, bg, 0.84),
+        "shadow": "#000000",
+    }
+    return mode, {mode: palette}
 
 
 def _adw_vars(p: Palette) -> dict[str, str]:
@@ -191,12 +287,19 @@ class ThemeManager(GObject.Object):
         )
         for path in (APP_COLORS, DMS_COLORS):
             self._watch(path)
+        if OMARCHY_CURRENT.exists():
+            self._watch(OMARCHY_CURRENT / "theme", create=False)
+            if OMARCHY_COLORS.parent.exists():
+                self._watch(OMARCHY_COLORS, create=False)
         self.reload()
 
     # ------------------------------------------------------------------ file watching
 
-    def _watch(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def _watch(self, path: Path, create: bool = True) -> None:
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        elif not path.parent.exists():
+            return
         mon = Gio.File.new_for_path(str(path.parent)).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
         mon.set_rate_limit(250)
 
@@ -222,13 +325,18 @@ class ThemeManager(GObject.Object):
         if tm == "artwork" and self._art_palette_key and self._art_palettes:
             self._apply(self._art_palettes.get(self.mode, {}), "artwork")
             return
-        for path in (APP_COLORS, DMS_COLORS):
-            if parsed := _parse_palette_file(path):
+        sources = (
+            (APP_COLORS, _parse_palette_file, APP_COLORS.name),
+            (OMARCHY_COLORS, _parse_omarchy_file, "omarchy"),
+            (DMS_COLORS, _parse_palette_file, DMS_COLORS.name),
+        )
+        for path, parser, label in sources:
+            if parsed := parser(path):
                 pref_mode, pals = parsed
                 # follow the generator's mode when we're set to follow the system
                 if pref_mode and self._style.get_color_scheme() == Adw.ColorScheme.DEFAULT:
                     self._sync_scheme(pref_mode)
-                self._apply(pals.get(self.mode) or next(iter(pals.values())), path.name)
+                self._apply(pals.get(self.mode) or next(iter(pals.values())), label)
                 return
         self._apply({}, "none")
 

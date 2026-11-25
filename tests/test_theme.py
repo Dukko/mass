@@ -2,7 +2,7 @@
 
 import json
 
-from mass.theme import _parse_palette_file
+from mass.theme import _parse_omarchy_file, _parse_palette_file
 from mass.ui.style import CSS as STYLE_CSS
 from mass.ui.style import FALLBACKS, SCROLLBAR_CSS
 
@@ -134,5 +134,58 @@ def test_nowplaying_sizing_constants():
     assert ART_MIN <= 100
     assert CARD_MIN <= 400
     assert PANEL_MIN <= 450
+
+
+def test_parse_omarchy_dark_theme(tmp_path):
+    theme_dir = tmp_path / "theme"
+    theme_dir.mkdir()
+    colors = theme_dir / "colors.toml"
+    colors.write_text(
+        'accent = "#78dce8"\n'
+        'background = "#0a1220"\n'
+        'foreground = "#f0f2f5"\n'
+        'color1 = "#f25e86"\n'
+        'color5 = "#ab9df2"\n'
+        'color6 = "#78dce8"\n'
+    )
+    parsed = _parse_omarchy_file(colors)
+    assert parsed is not None
+    mode, palettes = parsed
+    assert mode == "dark"
+    pal = palettes["dark"]
+    assert pal["primary"] == "#78dce8"
+    assert pal["background"] == "#0a1220"
+    assert pal["on_surface"] == "#f0f2f5"
+    assert pal["error"] == "#f25e86"
+    assert {k.replace("-", "_") for k in FALLBACKS} <= pal.keys()
+
+
+def test_parse_omarchy_light_mode_marker(tmp_path):
+    theme_dir = tmp_path / "theme"
+    theme_dir.mkdir()
+    (theme_dir / "light.mode").write_text("")
+    colors = theme_dir / "colors.toml"
+    colors.write_text(
+        'accent = "#1e66f5"\n'
+        'background = "#eff1f5"\n'
+        'foreground = "#4c4f69"\n'
+    )
+    parsed = _parse_omarchy_file(colors)
+    assert parsed is not None
+    mode, palettes = parsed
+    assert mode == "light"
+    assert "light" in palettes
+    assert palettes["light"]["on_primary"] == "#ffffff"
+
+
+def test_parse_omarchy_invalid_returns_none(tmp_path):
+    bad = tmp_path / "colors.toml"
+    bad.write_text("not = valid = toml")
+    assert _parse_omarchy_file(bad) is None
+
+    incomplete = tmp_path / "incomplete.toml"
+    incomplete.write_text('accent = "#78dce8"\n')
+    assert _parse_omarchy_file(incomplete) is None
+
 
 
